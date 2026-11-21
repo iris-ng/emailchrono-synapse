@@ -1,4 +1,3 @@
-import re
 import sqlite3
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -245,17 +244,15 @@ def delete_email(conn: sqlite3.Connection, email_id: int) -> None:
     attachment_repo.remove_attachment_dirs([attachment_dir])
 
 
-# Han ideographs (incl. CJK Ext-A and compatibility ideographs). Used to decide
-# whether a short query should bypass FTS5: the trigram tokenizer only matches
-# queries of >= 3 characters, so a 1-2 character Chinese query (e.g. 收, 合同)
-# yields nothing from MATCH and must fall back to a LIKE substring scan.
-_CJK_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
+# The trigram tokenizer only matches queries of >= 3 characters, so a 1-2
+# character query in any script (e.g. 合同, かな, 계약, Al) yields nothing from
+# MATCH and must fall back to a LIKE substring scan.
+_TRIGRAM_MIN_CHARS = 3
 
 
-def _short_cjk_query(q: str) -> bool:
-    """A 1-2 char query containing Han characters needs the LIKE fallback."""
-    stripped = q.strip()
-    return len(stripped) < 3 and bool(_CJK_RE.search(stripped))
+def _short_query(q: str) -> bool:
+    """A query too short for the trigram index needs the LIKE fallback."""
+    return len(q.strip()) < _TRIGRAM_MIN_CHARS
 
 
 def _like_escape(term: str) -> str:
@@ -275,8 +272,8 @@ def email_filter_parts(
     join_fts = False
     if q:
         stripped = q.strip()
-        if _short_cjk_query(stripped):
-            # Sub-trigram CJK query: scan the base table directly. No FTS join.
+        if _short_query(stripped):
+            # Sub-trigram query: scan the base table directly. No FTS join.
             pattern = f"%{_like_escape(stripped)}%"
             clauses.append(
                 "(e.subject LIKE ? ESCAPE '\\' OR e.body_text LIKE ? ESCAPE '\\')"

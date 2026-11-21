@@ -10,6 +10,7 @@ from ..services.audit import (
     list_audit_events as audit_list_audit_events,
     record_audit_event,
 )
+from ..services import source_store
 from ..services.text_norm import row_to_dict
 from . import attachments as attachment_repo
 
@@ -208,6 +209,14 @@ def delete_case(case_id: int) -> bool:
             return False
         rows = conn.execute("SELECT id FROM emails WHERE case_id = ?", (case_id,)).fetchall()
         attachment_dirs = [ATTACHMENTS_DIR / str(row["id"]) for row in rows]
+        source_shas = [
+            row["sha"]
+            for row in conn.execute(
+                "SELECT DISTINCT lower(source_blob_sha256) AS sha FROM emails"
+                " WHERE case_id = ? AND source_blob_sha256 IS NOT NULL",
+                (case_id,),
+            )
+        ]
         record_audit_event(
             conn,
             case_id=case_id,
@@ -219,6 +228,17 @@ def delete_case(case_id: int) -> bool:
         )
         result = conn.execute("DELETE FROM cases WHERE id = ?", (case_id,))
         deleted = result.rowcount > 0
+        # Source blobs are shared by content hash across cases, so remove only
+        # those no remaining email row (in any case, trashed or not) still uses.
+        unused_shas = [
+            sha
+            for sha in source_shas
+            if not conn.execute(
+                "SELECT 1 FROM emails WHERE lower(source_blob_sha256) = ? LIMIT 1", (sha,)
+            ).fetchone()
+        ]
     if deleted:
         attachment_repo.remove_attachment_dirs(attachment_dirs)
+        for sha in unused_shas:
+            source_store.remove_source(sha)
     return deleted

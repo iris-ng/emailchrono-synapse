@@ -11,6 +11,7 @@ Phase 2) or still live at a folder-scan path on disk.
 """
 
 import hashlib
+import os
 import re
 import shutil
 import tempfile
@@ -52,6 +53,22 @@ def store_source(content: bytes, sha: str) -> str:
 def managed_path(sha: str) -> Path:
     """Absolute path where ``sha`` would live in the managed store."""
     return SOURCES_DIR / relative_path_for(sha)
+
+
+def can_open_sources() -> bool:
+    """The open route hands files to os.startfile, which only Windows has."""
+    return hasattr(os, "startfile")
+
+
+def remove_source(sha: str) -> None:
+    """Delete the managed copy of ``sha`` and any openable temp copies of it.
+    The caller must first check that no email row still uses ``sha``."""
+    if not is_valid_sha256(sha):
+        return
+    managed_path(sha).unlink(missing_ok=True)
+    tmp_dir = Path(tempfile.gettempdir()) / "emailchrono_sources"
+    for copy in tmp_dir.glob(f"{sha.lower()}.*"):
+        copy.unlink(missing_ok=True)
 
 
 def resolve_source(email_row: Mapping[str, Any]) -> Optional[Path]:

@@ -140,11 +140,18 @@ def normalize_localized_text(text: str) -> str:
     return " ".join(text.replace("\u3000", " ").replace("\u202f", " ").split())
 
 
+# Optional explicit offset after the time, e.g. "+0800", "+08:00", "GMT+0800".
+# When present it wins over the case's default zone. A bare offset must follow
+# a space, so a time range such as "09:30-11:00" is not read as UTC-11:00.
+LOCALIZED_OFFSET = r"(?:(?:\s*(?:GMT|UTC)\s*|\s+|(?<=\s))(?P<offset>[+-]\d{2}:?\d{2})(?!\d))?"
+
+
 def parse_chinese_numeric_datetime(text: str) -> Optional[datetime]:
     match = re.search(
         r"(?P<year>\d{4})\s*\u5e74\s*(?P<month>\d{1,2})\s*\u6708\s*(?P<day>\d{1,2})\s*\u65e5"
         r"(?:\s*\([^)]*\)|\s*\u5468.)?\s*"
-        r"(?P<hour>\d{1,2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?\s*(?P<ampm>\u4e0a\u5348|\u4e0b\u5348)?",
+        r"(?P<hour>\d{1,2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?\s*(?P<ampm>\u4e0a\u5348|\u4e0b\u5348)?"
+        + LOCALIZED_OFFSET,
         text,
     )
     if not match:
@@ -157,12 +164,25 @@ def parse_chinese_month_name_datetime(text: str) -> Optional[datetime]:
     match = re.search(
         rf"(?:\u661f\u671f.|\u5468.)?,?\s*(?P<month_name>{month_names})\s+"
         r"(?P<day>\d{1,2}),\s*(?P<year>\d{4})\s+"
-        r"(?P<hour>\d{1,2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?\s*(?P<ampm>\u4e0a\u5348|\u4e0b\u5348)?",
+        r"(?P<hour>\d{1,2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?\s*(?P<ampm>\u4e0a\u5348|\u4e0b\u5348)?"
+        + LOCALIZED_OFFSET,
         text,
     )
     if not match:
         return None
     return build_datetime_from_match(match, CHINESE_MONTHS[match.group("month_name")])
+
+
+def offset_from_match(match: re.Match) -> Optional[timezone]:
+    offset = match.groupdict().get("offset")
+    if not offset:
+        return None
+    digits = offset[1:].replace(":", "")
+    hours, minutes = int(digits[:2]), int(digits[2:])
+    if hours > 14 or minutes > 59:
+        return None
+    delta = timedelta(hours=hours, minutes=minutes)
+    return timezone(-delta if offset[0] == "-" else delta)
 
 
 def build_datetime_from_match(match: re.Match, month: int) -> datetime:
@@ -179,6 +199,7 @@ def build_datetime_from_match(match: re.Match, month: int) -> datetime:
         hour,
         int(match.group("minute")),
         int(match.group("second") or 0),
+        tzinfo=offset_from_match(match),
     )
 
 

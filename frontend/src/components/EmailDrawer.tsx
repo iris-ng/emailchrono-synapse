@@ -55,10 +55,16 @@ export function EmailDrawer({ email, onClose, onSave, timeZone }: Props) {
     event.preventDefault();
     if (!email) return;
     setError("");
-    const parsedDate = parseDateInput(dateInput);
-    if (!parsedDate.ok) {
-      setError(parsedDate.error);
-      return;
+    // Send the date only when the user changed it. The field shows minutes, so
+    // re-sending an untouched date would drop its seconds.
+    let dateUpdate: EmailUpdate = {};
+    if (dateInput !== formatDateInput(email.date_utc, timeZone)) {
+      const parsedDate = parseDateInput(dateInput);
+      if (!parsedDate.ok) {
+        setError(parsedDate.error);
+        return;
+      }
+      dateUpdate = { date_utc: parsedDate.value };
     }
     setSaving(true);
     try {
@@ -66,7 +72,7 @@ export function EmailDrawer({ email, onClose, onSave, timeZone }: Props) {
         from_addr: fromAddr,
         to: splitList(to),
         cc: splitList(cc),
-        date_utc: parsedDate.value,
+        ...dateUpdate,
         subject,
         body_text: bodyText
       });

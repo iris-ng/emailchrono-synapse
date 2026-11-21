@@ -1117,7 +1117,38 @@ export function CasePage() {
     }, 1600);
   }
 
+  // The chronology loads in pages; the export must hold every matching email,
+  // not only the pages loaded on screen.
+  async function loadAllEmailsForExport(): Promise<EmailRecord[]> {
+    let all = emails;
+    let more = hasMoreEmails;
+    let total = emailTotal;
+    while (more) {
+      const page = await listEmailsPage(numericCaseId, {
+        q: query,
+        view: viewMode,
+        tagId: tagFilterId,
+        limit: EMAIL_PAGE_SIZE,
+        offset: all.length
+      });
+      all = mergeEmails(all, page.items);
+      total = page.total;
+      more = page.has_more && page.items.length > 0;
+      if (!more && all.length < total) {
+        throw new Error(`Only ${all.length} of ${total} emails could be loaded, so nothing was exported`);
+      }
+    }
+    return [...all].sort(compareForDisplay);
+  }
+
   async function exportChronology() {
+    let exportEmails: EmailRecord[];
+    try {
+      exportEmails = await loadAllEmailsForExport();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Emails could not be loaded for export");
+      return;
+    }
     const Excel = await import("exceljs");
     const workbook = new Excel.Workbook();
     workbook.creator = "Chronology";
@@ -1147,7 +1178,7 @@ export function CasePage() {
       { name: "Inferred fields", width: 60 }
     ];
     const threadLabels = new Map<string, number>();
-    const rows = displayEmails.map((email, index) => {
+    const rows = exportEmails.map((email, index) => {
       const key = threadKey(email);
       if (!threadLabels.has(key)) threadLabels.set(key, threadLabels.size + 1);
       return [
@@ -1185,7 +1216,7 @@ export function CasePage() {
       rows
     });
     sheet.columns = columns.map((column) => ({ width: column.width }));
-    styleChronologySheet(sheet, displayEmails);
+    styleChronologySheet(sheet, exportEmails);
 
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], {

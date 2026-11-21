@@ -34,6 +34,8 @@ ADDRESS_RE = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
 FORWARD_RE = re.compile(r"(?im)^-{3,}\s*Forwarded message\s*-{3,}\s*$")
 DIFFERENT_TEXT_BELOW = 0.5  # own-text similarity under this counts as different text
 DAYS_APART_ABOVE = 1.0
+# Scorer reason (emailchrono-local PR #1): same text, different sender or date.
+SAME_BODY_DIFFERENT_HEADERS = "same_body_different_headers"
 
 
 # --- helpers ---------------------------------------------------------------
@@ -219,16 +221,6 @@ def propose_duplicate_decision(pair: Dict[str, Any]) -> Dict[str, Any]:
         "duplicate_id": None,
     }
     exact = [code for code in pair["reasons"] if code in EXACT_REASON_CODES]
-    conflicts = _header_conflicts(pair)
-    if exact == ["same_body_hash"] and conflicts:
-        # Same text is not the same email: template reminders share one body.
-        # Only a Message-ID or same-file match proves identity, so a person decides.
-        return {
-            **base,
-            "decision": "left_for_you",
-            "evidence": [labels["same_body_hash"], *conflicts],
-            "why": "Same body text, but the headers differ. It may be a repeated template. A person should decide.",
-        }
     if exact:
         keeper = pair["suggested_keeper_id"]
         return {
@@ -240,6 +232,26 @@ def propose_duplicate_decision(pair: Dict[str, Any]) -> Dict[str, Any]:
             "why": f"Exact match ({', '.join(exact)}). Keep #{keeper}, the better-parsed copy.",
         }
 
+    conflicts = _header_conflicts(pair)
+    if SAME_BODY_DIFFERENT_HEADERS in pair["reasons"]:
+        # The scorer saw the same text with a different sender or date.
+        label = labels[SAME_BODY_DIFFERENT_HEADERS]
+        if conflicts:
+            return {
+                **base,
+                "decision": "dissimilar",
+                "evidence": [label, *conflicts],
+                "why": "Same text, but different senders or dates far apart: separate emails, such as a repeated template.",
+            }
+        return {
+            **base,
+            "decision": "left_for_you",
+            "evidence": [label],
+            "why": (
+                "Same text, and the sender or date differs only slightly: this may be the same email read twice "
+                "(for example a quoted copy whose time was read in another time zone). A person should decide."
+            ),
+        }
     evidence = list(conflicts)
     similarity = pair.get("own_text_similarity")
     if similarity is not None and similarity < DIFFERENT_TEXT_BELOW:

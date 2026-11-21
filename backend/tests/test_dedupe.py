@@ -193,7 +193,11 @@ def test_decisions_are_plain_json(planted_case):
 
 
 def _pair(reasons, senders=("a@x.example", "a@x.example"), days=0.0):
-    labels = {"same_body_hash": "Same normalized body", "same_message_id": "Same Message-ID"}
+    labels = {
+        "same_body_hash": "Same normalized body",
+        "same_message_id": "Same Message-ID",
+        "same_body_different_headers": "Same normalized body, different sender or date",
+    }
     return {
         "candidate_id": 1,
         "email_a": {"id": 1},
@@ -207,17 +211,41 @@ def _pair(reasons, senders=("a@x.example", "a@x.example"), days=0.0):
     }
 
 
-def test_same_body_from_different_senders_is_left_for_the_person():
-    """Codex F14: two reminders with one template body are not the same email."""
-    decision = dedupe.propose_duplicate_decision(_pair(["same_body_hash"], senders=("a@x.example", "b@y.example")))
-    assert decision["decision"] == "left_for_you"
-    assert any("Different senders" in e for e in decision["evidence"])
+TEMPLATE = (
+    "Please send the outstanding payment confirmation by close of business.\n"
+    "This automated reminder is sent by the accounts team."
+)
 
 
-def test_same_body_a_month_apart_is_left_for_the_person():
-    decision = dedupe.propose_duplicate_decision(_pair(["same_body_hash"], days=30.0))
+def test_scorer_does_not_call_a_template_body_from_another_sender_exact():
+    """Upstream emailchrono-local PR #1 (Codex F14): same text, different sender or date."""
+    from app.services.duplicates import duplicate_score
+
+    left = {"from_addr": "Accounts <a@vendor-a.example>", "date_utc": "2024-03-01T09:00:00+00:00", "body_text": TEMPLATE}
+    right = {"from_addr": "Billing <b@vendor-b.example>", "date_utc": "2024-04-01T09:00:00+00:00", "body_text": TEMPLATE}
+    _, reasons = duplicate_score(left, right)
+    assert [r["code"] for r in reasons] == ["same_body_different_headers"]
+
+
+def test_same_text_from_different_senders_is_proposed_as_not_a_duplicate():
+    """Different sender addresses or dates far apart: different emails, such as a
+    repeated template. The plan says the text is the same, so the person sees why."""
+    for pair in (
+        _pair(["same_body_different_headers"], senders=("a@x.example", "b@y.example")),
+        _pair(["same_body_different_headers"], days=30.0),
+    ):
+        decision = dedupe.propose_duplicate_decision(pair)
+        assert decision["decision"] == "dissimilar"
+        assert "Same normalized body, different sender or date" in decision["evidence"]
+        assert "same text" in decision["why"].lower()
+
+
+def test_same_text_a_few_hours_apart_is_left_for_the_person():
+    """Same sender, time off by hours: may be one email read twice (a quoted copy
+    whose time was read in the wrong time zone)."""
+    decision = dedupe.propose_duplicate_decision(_pair(["same_body_different_headers"], days=0.15))
     assert decision["decision"] == "left_for_you"
-    assert any("days apart" in e for e in decision["evidence"])
+    assert "same email" in decision["why"].lower()
 
 
 def test_same_body_same_sender_same_day_is_still_a_duplicate():

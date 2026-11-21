@@ -1,6 +1,7 @@
 import sqlite3
 from typing import Any, Dict, List, Optional
 
+from .source_store import can_open_sources
 from .text_norm import (
     fallback_thread_key,
     json_loads,
@@ -49,7 +50,10 @@ def serialize_email(
     if chain_date_conflict and "chain_date_conflict" not in item["flags"]:
         item["flags"].append("chain_date_conflict")
     item["user_edited"] = bool(item["user_edited"])
-    item["source_openable"] = bool(item["source_openable"])
+    # Report a source as openable only where this platform can open it, so the
+    # UI does not offer a Source button that always fails. The stored flag is
+    # kept, so the same data still opens on Windows.
+    item["source_openable"] = bool(item["source_openable"]) and can_open_sources()
     item["important"] = bool(item.get("important"))
     item["suspected_duplicate_count"] = suspected_duplicate_count
     item["attachments"] = attachments

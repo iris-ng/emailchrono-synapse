@@ -316,6 +316,32 @@ def _validate_email_source_refs(emails: List[Dict[str, Any]]) -> None:
             raise ImportError_("Malformed source blob in bundle")
 
 
+def _validate_blob_members(
+    zf: zipfile.ZipFile, emails: List[Dict[str, Any]], attachments: List[Dict[str, Any]]
+) -> None:
+    """Refuse a bundle whose rows refer to source or attachment files it lacks,
+    rather than import records that point at no evidence."""
+    names = set(zf.namelist())
+    missing_sources = {
+        sha
+        for sha in (e.get("source_blob_sha256") for e in emails)
+        if sha and f"sources/{sha}" not in names and f"sources/{sha.lower()}" not in names
+    }
+    email_ids = {e.get("id") for e in emails}
+    missing_attachments = [
+        att
+        for att in attachments
+        if att.get("email_id") in email_ids
+        and att.get("disk_path")
+        and f"attachments/{Path(att['disk_path']).as_posix()}" not in names
+    ]
+    if missing_sources or missing_attachments:
+        raise ImportError_(
+            "Bundle is incomplete: "
+            f"{len(missing_sources)} source file(s) and {len(missing_attachments)} attachment file(s) are missing"
+        )
+
+
 def _read_bundle(data: bytes) -> Dict[str, Any]:
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
@@ -408,6 +434,7 @@ def import_bundle(data: bytes) -> Dict[str, Any]:
     zf: zipfile.ZipFile = bundle["zip"]
     _validate_source_blobs(zf)
     _validate_email_source_refs(bundle["emails"])
+    _validate_blob_members(zf, bundle["emails"], bundle["attachments"])
 
     with db.get_conn() as conn:
         current = max_schema_version(conn)
@@ -472,18 +499,19 @@ def import_bundle(data: bytes) -> Dict[str, Any]:
             snip_map[old_id] = _insert_row(conn, "email_snips", row)
 
         # Second pass for email self/cross FKs now that all maps exist.
+        # derived_from_attachment_id stays NULL here: attachments are not
+        # inserted yet, so the old id may not exist. It is set after step 7.
         for new_id, saved in deferred_email_fks.items():
             conn.execute(
                 """
                 UPDATE emails SET parent_email_id = ?, chain_source_id = ?,
-                    superseded_by_snip_id = ?, derived_from_attachment_id = ?
+                    superseded_by_snip_id = ?
                 WHERE id = ?
                 """,
                 (
                     email_map.get(saved["parent_email_id"]),
                     email_map.get(saved["chain_source_id"]),
                     snip_map.get(saved["superseded_by_snip_id"]),
-                    saved["derived_from_attachment_id"],  # remapped after attachments below
                     new_id,
                 ),
             )

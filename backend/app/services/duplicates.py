@@ -1,6 +1,7 @@
 import hashlib
 import re
 from datetime import datetime
+from email.utils import parseaddr
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .fingerprint import Fingerprint, body_containment, containment_from_hashes, minhash_jaccard
@@ -25,6 +26,8 @@ BODY_JACCARD_STRONG_THRESHOLD = 0.85
 # claim, so it scores below confirmed content matches and stays human-reviewed.
 BODY_CONTAINMENT_THRESHOLD = 0.90
 BODY_CONTAINMENT_SCORE = 0.93
+# Equal bodies whose sender or date disagree: strong, but reviewed by a person.
+BODY_SAME_REVIEW_SCORE = 0.95
 DATE_CLOSE_SECONDS = 10 * 60
 
 # Reason codes that mean two rows are an exact (not merely similar) match.
@@ -46,10 +49,10 @@ def duplicate_score(
 
     left_sha = (left.get("source_sha256") or "").strip()
     right_sha = (right.get("source_sha256") or "").strip()
-    # emailchrono-synapse change: every row cut from one file (quoted children,
-    # Snip parts) inherits that file's hash, so a shared hash alone used to mark a
-    # parent and its own quoted replies as exact duplicates. Count it only when
-    # both rows hold the same place in their file. Two uploads of one file still match.
+    # Every row cut from one file (quoted children, Snip parts) inherits that
+    # file's hash, so a shared hash alone would mark a parent and its own quoted
+    # replies as exact duplicates. Count it only when both rows hold the same
+    # place in their file. Two uploads of one file still match.
     if left_sha and left_sha == right_sha and same_place_in_file(left, right):
         reasons.append({"code": "same_source_sha256", "label": "Same source file hash"})
         score = max(score, 1.0)
@@ -70,8 +73,17 @@ def duplicate_score(
     if left_body and right_body:
         min_len = min(len(left_body), len(right_body))
         if body_hash(left_body) == body_hash(right_body) and min_len >= BODY_EXACT_MIN_LENGTH:
-            reasons.append({"code": "same_body_hash", "label": "Same normalized body"})
-            score = max(score, 0.97)
+            # Template mail (reminders, notices) repeats one body across
+            # separate messages, so an equal body is exact only when sender and
+            # date agree. Otherwise keep the pair for a person to review.
+            if headers_disagree(left, right):
+                reasons.append(
+                    {"code": "same_body_different_headers", "label": "Same normalized body, different sender or date"}
+                )
+                score = max(score, BODY_SAME_REVIEW_SCORE)
+            else:
+                reasons.append({"code": "same_body_hash", "label": "Same normalized body"})
+                score = max(score, 0.97)
         else:
             context = duplicate_context(left, right)
             body_matched = False
@@ -155,6 +167,41 @@ def same_place_in_file(left: Mapping[str, Any], right: Mapping[str, Any]) -> boo
     return int(left.get("chain_position") or 0) == int(right.get("chain_position") or 0) and (
         (left.get("source_kind") or "standalone") == (right.get("source_kind") or "standalone")
     )
+
+
+def headers_disagree(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    """True when both rows name a sender, or both carry a date, and they differ.
+    A missing or unreadable value is unknown, not a disagreement."""
+    if senders_differ(left.get("from_addr"), right.get("from_addr")):
+        return True
+    return dates_differ(left.get("date_utc"), right.get("date_utc"))
+
+
+def _sender_parts(value: Optional[str]) -> Tuple[str, str]:
+    name, addr = parseaddr(value or "")
+    if "@" not in addr:  # a bare display name parses as the address
+        name, addr = name or addr, ""
+    return normalize_contact(name), addr.strip().lower()
+
+
+def senders_differ(left: Optional[str], right: Optional[str]) -> bool:
+    left_name, left_addr = _sender_parts(left)
+    right_name, right_addr = _sender_parts(right)
+    if left_addr and right_addr:
+        return left_addr != right_addr
+    if left_name and right_name:
+        return left_name != right_name
+    return False
+
+
+def dates_differ(left: Optional[str], right: Optional[str]) -> bool:
+    if not left or not right:
+        return False
+    try:
+        gap = abs((datetime.fromisoformat(left) - datetime.fromisoformat(right)).total_seconds())
+    except (TypeError, ValueError):
+        return False
+    return gap > DATE_CLOSE_SECONDS
 
 
 def reasons_are_exact(reasons: Iterable[Mapping[str, Any]]) -> bool:

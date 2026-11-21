@@ -3389,10 +3389,15 @@ body.chain-resizing {
     padding: 28px 0 56px;
   }
 
-  .masthead {
+  .masthead,
+  .case-header {
     align-items: flex-start;
     flex-direction: column;
     gap: 16px;
+  }
+
+  .case-header .header-actions {
+    justify-content: flex-start;
   }
 
   .case-layout,

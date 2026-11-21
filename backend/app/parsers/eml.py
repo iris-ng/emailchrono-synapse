@@ -8,6 +8,7 @@ from typing import Iterable, List, Optional, Tuple
 from charset_normalizer import from_bytes
 
 from .base import AttachmentParseResult, EmailParseResult
+from .msg import html_to_text
 from ..services.dates import to_utc
 from ..services.sanitize import sanitize_html
 
@@ -28,6 +29,11 @@ def parse_eml_bytes(content: bytes, source_file_display: str, default_tz: str = 
     sanitized_html = sanitize_html(body_html)
     if body_html and sanitized_html != body_html:
         flags.append("html_sanitized")
+
+    # HTML-only email: derive the text body from the sanitized HTML, as the
+    # MSG parser does, so text view, search and export are not blank.
+    if not body_text.strip() and sanitized_html:
+        body_text = html_to_text(sanitized_html)
 
     body_format = "html" if body_html else "text"
     parse_confidence = "low" if "missing_date" in flags or "malformed_date" in flags else "high"
@@ -197,7 +203,10 @@ def nested_email_filename(nested: Optional[Message]) -> str:
 
 
 def get_text_content(part: Message) -> str:
-    if isinstance(part, EmailMessage):
+    # get_content() decodes a part with no charset as ASCII with replacement
+    # and succeeds, so only use it when a charset is declared; otherwise fall
+    # through to detection below.
+    if isinstance(part, EmailMessage) and part.get_param("charset"):
         try:
             return part.get_content()
         except Exception:

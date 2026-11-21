@@ -329,6 +329,9 @@ def open_email_source(email_id: int):
         raise HTTPException(status_code=404, detail="Email not found")
     if not source["source_openable"]:
         raise HTTPException(status_code=400, detail="This email source is not openable")
+    if not source_store.can_open_sources():
+        # Refuse before resolving or copying the source to a temp file.
+        raise HTTPException(status_code=501, detail="Opening source files is only supported on Windows")
 
     path = source_store.resolve_source(source)
     if path is None:
