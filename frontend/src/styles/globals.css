@@ -2181,6 +2181,106 @@ a.sidebar-title:hover {
   border-color: transparent;
 }
 
+/* AI-inferred field mark: hover or focus shows the evidence (title). */
+.email-card .inferred-mark,
+.review-panel .inferred-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  width: fit-content;
+  margin: 0 6px 0 0;
+  padding: 0 6px;
+  border: 1px dashed var(--accent);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 17px;
+  font-family: inherit;
+  letter-spacing: 0;
+  text-transform: none;
+  vertical-align: 2px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.email-card .inferred-mark:hover,
+.review-panel .inferred-mark:hover,
+.email-card .inferred-mark[aria-expanded="true"],
+.review-panel .inferred-mark[aria-expanded="true"] {
+  border-style: solid;
+}
+
+.inferred-tip {
+  position: fixed;
+  z-index: 60;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 16px));
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: var(--shadow-hover);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.inferred-tip strong {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 650;
+}
+
+.inferred-tip dl {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.inferred-tip dl > div {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.inferred-tip dt {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.inferred-tip dd {
+  margin: 0;
+}
+
+.inferred-tip p {
+  margin: 8px 0 0;
+  color: var(--muted);
+}
+
+.email-card h2 .inferred-mark {
+  margin: 0 0 0 8px;
+}
+
+.email-card .inferred-mark:focus-visible,
+.review-panel .inferred-mark:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+.email-card.important .inferred-mark {
+  border-color: #c7d2fe;
+  background: rgba(199, 210, 254, 0.12);
+  color: #c7d2fe;
+}
+
 .badge.doc-id {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   font-weight: 600;
@@ -5148,6 +5248,139 @@ body.chain-resizing {
   margin: 0;
   font-size: 12px;
   white-space: pre-wrap;
+}
+
+/* Chronology plan items: split previews and field changes. */
+.review-problems {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+
+.review-item-title > .review-problems:first-child {
+  margin-left: 0;
+}
+
+.review-problem {
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.review-card small {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.review-split-lines code {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.review-parts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.review-part {
+  align-content: start;
+  gap: 6px;
+}
+
+.review-fields {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 10px;
+  margin: 0;
+}
+
+.review-fields dt {
+  color: var(--faint);
+  font-weight: 600;
+}
+
+.review-fields dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.review-fields dd.is-changed {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.review-changes {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-change {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--panel);
+  font-size: 13px;
+}
+
+.review-change-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
+.review-change-head s {
+  color: var(--muted);
+}
+
+.review-change-head .inferred-mark {
+  margin: 0;
+}
+
+.review-change-quote,
+.review-change-evidence {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.review-rejected {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.review-part-text summary {
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.review-part-text pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--raised);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .review-panel-footer {

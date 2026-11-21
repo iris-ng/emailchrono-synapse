@@ -71,6 +71,8 @@ export type EmailRecord = {
   deleted_at?: string | null;
   suspected_duplicate_count: number;
   flags: string[];
+  /** AI-inferred fields still unchecked by a person: label -> evidence. */
+  inferred?: Partial<Record<InferredLabel, string>>;
   attachments: AttachmentRecord[];
   tags: Tag[];
   boundary_method: string;
@@ -406,6 +408,60 @@ export interface DuplicatePlanItem {
   email_b: ReviewCardSnapshot;
 }
 
+export type InferredLabel = "from" | "to" | "subject" | "date" | "timezone";
+export type InferredFlag = "inferred_from" | "inferred_to" | "inferred_subject" | "inferred_date" | "inferred_timezone";
+
+export interface ChronologyFieldChange {
+  field: "from_addr" | "to" | "subject" | "date_utc";
+  old: string | string[] | null;
+  new: string | string[] | null;
+  evidence: string;
+  inferred: InferredFlag[];
+  quote?: string;
+}
+
+export interface ChronologyPartFields {
+  from_addr: string;
+  to: string[];
+  subject: string;
+  date_utc: string | null;
+  date_raw: string | null;
+  first_line: string;
+}
+
+export interface ChronologyPart {
+  part_index: number;
+  before: ChronologyPartFields;
+  after: ChronologyPartFields & { cc: string[]; body_text: string };
+  changes: ChronologyFieldChange[];
+  rejected: { field: string; value: unknown; why: string }[];
+}
+
+export interface ChronologyCardSnapshot extends ReviewCardSnapshot {
+  to: string[];
+  date_raw: string | null;
+}
+
+export interface SplitPlanItem {
+  op: "split";
+  email_id: number;
+  card: ChronologyCardSnapshot;
+  problems: string[];
+  offsets: number[];
+  split_lines: string[];
+  parts: ChronologyPart[];
+}
+
+export interface SetFieldsPlanItem {
+  op: "set_fields";
+  email_id: number;
+  card: ChronologyCardSnapshot;
+  problems: string[];
+  changes: ChronologyFieldChange[];
+  rejected: { field: string; value: unknown; why: string }[];
+  after: ChronologyPartFields;
+}
+
 export interface ReviewPlanItem {
   op: string;
   [key: string]: unknown;
@@ -413,6 +469,8 @@ export interface ReviewPlanItem {
 
 export interface LeftForYouEntry {
   why?: string;
+  problem?: string;
+  part_index?: number | null;
   email_a?: ReviewCardSnapshot;
   email_b?: ReviewCardSnapshot;
   email?: ReviewCardSnapshot;

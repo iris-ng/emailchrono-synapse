@@ -19,8 +19,17 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import type { EmailRecord, RelationState, Tag } from "../types";
+import type { EmailRecord, InferredLabel, RelationState, Tag } from "../types";
+import { INFERRED_FOOTER, INFERRED_HEADING, inferredItems, inferredLabels } from "../utils/inferred";
 import { EmailHtmlFrame } from "./EmailHtmlFrame";
+import { InferredMark } from "./InferredMark";
+
+/** "inferred" pill for the given fields; hover, focus or click shows the AI's evidence. Nothing if none is marked. */
+function FieldInferredMark({ email, labels }: { email: EmailRecord; labels: InferredLabel[] }) {
+  const marked = inferredLabels(email, labels);
+  if (marked.length === 0) return null;
+  return <InferredMark heading={INFERRED_HEADING} items={inferredItems(email, marked)} footer={INFERRED_FOOTER} />;
+}
 
 type Props = {
   email: EmailRecord;
@@ -210,6 +219,7 @@ export function EmailCard({
       <div className="email-time">
         <span>{formatDay(email.date_utc, timeZone)}</span>
         <strong>{formatTime(email.date_utc, timeZone)}</strong>
+        <FieldInferredMark email={email} labels={["date", "timezone"]} />
         <div className="badges">
             {email.doc_id && (
               <span className="badge doc-id" title="Document ID">
@@ -354,10 +364,12 @@ export function EmailCard({
           <div className="email-card-top">
             <div className="email-participants">
               <span>
-                <em>From</em> {email.from_addr || "Unknown sender"}
+                <em>From</em>
+                <FieldInferredMark email={email} labels={["from"]} /> {email.from_addr || "Unknown sender"}
               </span>
               <span>
-                <em>To</em> {formatRecipients(email.to)}
+                <em>To</em>
+                <FieldInferredMark email={email} labels={["to"]} /> {formatRecipients(email.to)}
               </span>
               {email.cc.length > 0 && (
                 <span>
@@ -366,7 +378,10 @@ export function EmailCard({
               )}
             </div>
           </div>
-          <h2>{email.subject}</h2>
+          <h2>
+            {email.subject}
+            <FieldInferredMark email={email} labels={["subject"]} />
+          </h2>
           <div className="email-tags" onClick={(event) => event.stopPropagation()}>
             {email.tags.map((tag) => (
               <span className="tag-chip" key={tag.id} style={tagChipStyle(tag.color)}>

@@ -72,3 +72,47 @@ def test_duplicates_server_reports_missing_case(planted_case):
     _, result, text = _call("resolve_case_duplicates_server.py", "resolve_case_duplicates", {"case_id": 999999})
     body = json.loads(text)
     assert body["ok"] is False and "not found" in body["reason"]
+
+
+# --- review_chronology (Synapse build 1, one hand edit) -------------------------------
+
+
+@pytest.fixture()
+def stub_model(monkeypatch):
+    from app.review import chronology
+
+    # The server runs in a subprocess, which inherits this environment.
+    monkeypatch.setenv(chronology.MODEL_STUB_ENV, "tests.chronology_stub:respond")
+
+
+def test_chronology_server_lists_one_tool_with_optional_plan_id(planted_case, stub_model):
+    tools, _, _ = _call("review_chronology_server.py", "review_chronology", {"case_id": 999999})
+    assert [t.name for t in tools] == ["review_chronology"]
+    schema = tools[0].inputSchema
+    assert schema["required"] == ["case_id"]
+    assert "plan_id" in schema["properties"]
+
+
+def test_chronology_server_plans_waits_then_applies(planted_case, stub_model):
+    case_id = planted_case["case_id"]
+    _, result, text = _call("review_chronology_server.py", "review_chronology", {"case_id": case_id})
+    assert not result.isError, text
+    planned = json.loads(text)
+    assert planned["ok"] is True and planned["plan_id"].startswith("rp_"), planned
+    assert planned["counts"] == {"split": 3, "set_fields": 5, "left_for_you": 1}
+
+    _, _, text = _call("review_chronology_server.py", "review_chronology", {"case_id": case_id, "plan_id": planned["plan_id"]})
+    assert json.loads(text)["status"] == "waiting_for_approval"
+
+    plan = plans.get_plan(planned["plan_id"])
+    approval.approve_plan(plan["id"], via="bench", items_hash=plan["items_hash"])
+    _, _, text = _call("review_chronology_server.py", "review_chronology", {"case_id": case_id, "plan_id": planned["plan_id"]})
+    applied = json.loads(text)
+    assert applied["status"] == "applied" and applied["receipt"]["item_count"] == 8
+
+
+def test_chronology_server_reports_missing_case(planted_case, stub_model):
+    _, _, text = _call("review_chronology_server.py", "review_chronology", {"case_id": 999999})
+    body = json.loads(text)
+    assert body["ok"] is False and "not found" in body["reason"]
+

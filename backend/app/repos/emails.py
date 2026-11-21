@@ -48,7 +48,8 @@ def _serialize_rows(
     attachments = attachment_repo.attachments_for_emails(conn, email_ids)
     tags = tag_service.tags_for_emails(conn, email_ids)
     counts = duplicate_repo.pending_duplicate_counts(conn, email_ids) if with_counts else {}
-    return [
+    inferred = inferred_for_emails(conn, email_ids)
+    items = [
         serialize_email(
             row,
             attachments.get(row["id"], []),
@@ -58,6 +59,9 @@ def _serialize_rows(
         )
         for row in rows
     ]
+    for item in items:
+        item["inferred"] = inferred.get(item["id"], {})
+    return items
 
 
 def serialize_email_bundle(
@@ -441,7 +445,78 @@ def chain_date_conflict_ids(rows: Iterable[sqlite3.Row]) -> set:
     return conflict_ids
 
 
+# Fields an AI review can mark as inferred, and the email_flags row for each.
+# Editing a field by hand removes its mark: the person has now checked it.
+INFERRED_FLAGS_BY_FIELD = {
+    "from_addr": ("inferred_from",),
+    "to": ("inferred_to",),
+    "subject": ("inferred_subject",),
+    "date_utc": ("inferred_date", "inferred_timezone"),
+    "date_raw": ("inferred_date", "inferred_timezone"),
+}
+INFERRED_FLAG_LABELS = {
+    "inferred_from": "from",
+    "inferred_to": "to",
+    "inferred_subject": "subject",
+    "inferred_date": "date",
+    "inferred_timezone": "timezone",
+}
+
+
+def inferred_for_emails(conn: sqlite3.Connection, email_ids: Iterable[int]) -> Dict[int, Dict[str, str]]:
+    """{email_id: {label: evidence}} for every inferred_* flag on the given emails."""
+    ids = list(dict.fromkeys(int(i) for i in email_ids))
+    found: Dict[int, Dict[str, str]] = {}
+    if not ids:
+        return found
+    placeholders = ",".join("?" for _ in ids)
+    for row in conn.execute(
+        f"SELECT email_id, flag, detail_json FROM email_flags WHERE email_id IN ({placeholders}) AND flag LIKE 'inferred_%' ORDER BY id",
+        ids,
+    ):
+        label = INFERRED_FLAG_LABELS.get(row["flag"])
+        if label:
+            found.setdefault(row["email_id"], {})[label] = str(json_loads(row["detail_json"], {}).get("evidence") or "")
+    return found
+
+
 def update_email(email_id: int, changes: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    with db.get_conn() as conn:
+        row = update_email_fields(conn, email_id, changes)
+        if row is None:
+            return None
+        chain_rows = [row]
+        if row["chain_source_id"] is not None:
+            chain_rows = conn.execute(
+                "SELECT * FROM emails WHERE case_id = ? AND chain_source_id = ?",
+                (row["case_id"], row["chain_source_id"]),
+            ).fetchall()
+        conflict_ids = chain_date_conflict_ids(chain_rows)
+        attachments = attachment_repo.attachments_for_emails(conn, [email_id]).get(email_id, [])
+        tags = tag_service.tags_for_emails(conn, [email_id]).get(email_id, [])
+        duplicate_counts = duplicate_repo.pending_duplicate_counts(conn, [email_id])
+        item = serialize_email(
+            row,
+            attachments,
+            email_id in conflict_ids,
+            duplicate_counts.get(email_id, 0),
+            tags,
+        )
+        item["inferred"] = inferred_for_emails(conn, [email_id]).get(email_id, {})
+        return item
+
+
+def update_email_fields(
+    conn: sqlite3.Connection,
+    email_id: int,
+    changes: Dict[str, Any],
+    *,
+    actor: str = "local",
+    audit_metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[sqlite3.Row]:
+    """Connection-taking core of update_email. Writes edits, the audit event and the
+    Undated tag; removes the inferred mark of every field it changes. Returns the
+    updated row, or None if the email is missing. Does not commit."""
     allowed = {
         "from_addr": "from_addr",
         "to": "to_json",
@@ -453,99 +528,90 @@ def update_email(email_id: int, changes: Dict[str, Any]) -> Optional[Dict[str, A
         "notes": "notes",
         "important": "important",
     }
-    with db.get_conn() as conn:
-        current = conn.execute(
-            "SELECT * FROM emails WHERE id = ? AND deleted_at IS NULL",
-            (email_id,),
-        ).fetchone()
-        if not current:
-            return None
-        now = db.utc_now()
-        assignments = []
-        params: List[Any] = []
-        before_values: Dict[str, Any] = {}
-        after_values: Dict[str, Any] = {}
-        for api_field, db_field in allowed.items():
-            if api_field not in changes:
-                continue
-            value = changes[api_field]
-            if api_field in {"to", "cc"}:
-                stored_value = json_dumps(value)
-            elif api_field == "important":
-                stored_value = int(bool(value))
-            else:
-                stored_value = value
-            old_value = current[db_field]
-            if stored_value == old_value:
-                continue
-            assignments.append(f"{db_field} = ?")
-            params.append(stored_value)
-            before_values[api_field] = json_loads(old_value, []) if api_field in {"to", "cc"} else old_value
-            after_values[api_field] = value
-            conn.execute(
-                """
-                INSERT INTO edits (email_id, field, old_value, new_value, ts)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    email_id,
-                    api_field,
-                    old_value,
-                    stored_value,
-                    now,
-                ),
-            )
-        if assignments:
-            parsed_fields = {"from_addr", "to", "cc", "date_utc", "date_raw", "subject", "body_text"}
-            if any(field in changes for field in parsed_fields):
-                assignments.extend(["user_edited = 1"])
-            params.append(email_id)
-            conn.execute(
-                f"UPDATE emails SET {', '.join(assignments)} WHERE id = ?",
-                params,
-            )
-            if "subject" in changes or "body_text" in changes:
-                updated = conn.execute(
-                    "SELECT subject, body_text FROM emails WHERE id = ?", (email_id,)
-                ).fetchone()
-                conn.execute(
-                    "UPDATE emails_fts SET subject = ?, body_text = ? WHERE rowid = ?",
-                    (updated["subject"], updated["body_text"], email_id),
-                )
-        if "date_utc" in after_values:
-            tag_service.sync_undated_tag(conn, current["case_id"], [email_id])
-        row = conn.execute("SELECT * FROM emails WHERE id = ?", (email_id,)).fetchone()
-        if assignments:
-            record_audit_event(
-                conn,
-                case_id=row["case_id"],
-                action="email.updated",
-                entity_type="email",
-                entity_id=email_id,
-                before=before_values,
-                after=after_values,
-                metadata={
-                    "fields": list(after_values.keys()),
-                    "subject": row["subject"],
-                },
-            )
-        chain_rows = [row]
-        if row["chain_source_id"] is not None:
-            chain_rows = conn.execute(
-                "SELECT * FROM emails WHERE case_id = ? AND chain_source_id = ?",
-                (row["case_id"], row["chain_source_id"]),
-            ).fetchall()
-        conflict_ids = chain_date_conflict_ids(chain_rows)
-        attachments = attachment_repo.attachments_for_emails(conn, [email_id]).get(email_id, [])
-        tags = tag_service.tags_for_emails(conn, [email_id]).get(email_id, [])
-        duplicate_counts = duplicate_repo.pending_duplicate_counts(conn, [email_id])
-        return serialize_email(
-            row,
-            attachments,
-            email_id in conflict_ids,
-            duplicate_counts.get(email_id, 0),
-            tags,
+    current = conn.execute(
+        "SELECT * FROM emails WHERE id = ? AND deleted_at IS NULL",
+        (email_id,),
+    ).fetchone()
+    if not current:
+        return None
+    now = db.utc_now()
+    assignments = []
+    params: List[Any] = []
+    before_values: Dict[str, Any] = {}
+    after_values: Dict[str, Any] = {}
+    for api_field, db_field in allowed.items():
+        if api_field not in changes:
+            continue
+        value = changes[api_field]
+        if api_field in {"to", "cc"}:
+            stored_value = json_dumps(value)
+        elif api_field == "important":
+            stored_value = int(bool(value))
+        else:
+            stored_value = value
+        old_value = current[db_field]
+        if stored_value == old_value:
+            continue
+        assignments.append(f"{db_field} = ?")
+        params.append(stored_value)
+        before_values[api_field] = json_loads(old_value, []) if api_field in {"to", "cc"} else old_value
+        after_values[api_field] = value
+        conn.execute(
+            """
+            INSERT INTO edits (email_id, field, old_value, new_value, ts)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                email_id,
+                api_field,
+                old_value,
+                stored_value,
+                now,
+            ),
         )
+    if assignments:
+        parsed_fields = {"from_addr", "to", "cc", "date_utc", "date_raw", "subject", "body_text"}
+        if any(field in changes for field in parsed_fields):
+            assignments.extend(["user_edited = 1"])
+        params.append(email_id)
+        conn.execute(
+            f"UPDATE emails SET {', '.join(assignments)} WHERE id = ?",
+            params,
+        )
+        if "subject" in changes or "body_text" in changes:
+            updated = conn.execute(
+                "SELECT subject, body_text FROM emails WHERE id = ?", (email_id,)
+            ).fetchone()
+            conn.execute(
+                "UPDATE emails_fts SET subject = ?, body_text = ? WHERE rowid = ?",
+                (updated["subject"], updated["body_text"], email_id),
+            )
+    if "date_utc" in after_values:
+        tag_service.sync_undated_tag(conn, current["case_id"], [email_id])
+    cleared = sorted({flag for field in after_values for flag in INFERRED_FLAGS_BY_FIELD.get(field, ())})
+    if cleared:
+        conn.execute(
+            f"DELETE FROM email_flags WHERE email_id = ? AND flag IN ({','.join('?' for _ in cleared)})",
+            [email_id, *cleared],
+        )
+    row = conn.execute("SELECT * FROM emails WHERE id = ?", (email_id,)).fetchone()
+    if assignments:
+        record_audit_event(
+            conn,
+            case_id=row["case_id"],
+            action="email.updated",
+            entity_type="email",
+            entity_id=email_id,
+            before=before_values,
+            after=after_values,
+            metadata={
+                "fields": list(after_values.keys()),
+                "subject": row["subject"],
+                **(audit_metadata or {}),
+            },
+            actor=actor,
+        )
+    return row
 
 
 def list_deleted_emails(case_id: int) -> List[Dict[str, Any]]:

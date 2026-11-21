@@ -131,7 +131,7 @@ def check_case_ready_for_duplicate_review(case_id: int) -> Dict[str, Any]:
     problem_cards = problems.find_problem_cards(case_id)
     if problem_cards:
         warnings.append(
-            f"{len(problem_cards)} card(s) still have chronology problems (undated or date conflicts). "
+            f"{len(problem_cards)} card(s) still have chronology problems (merged, undated, date conflicts or unclear senders). "
             "A chronology review may create new duplicate pairs later."
         )
     return {"ok": True, "case_id": case_id, "reason": "", "warnings": warnings}

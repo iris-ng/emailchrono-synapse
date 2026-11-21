@@ -53,95 +53,10 @@ def snip_email(
 ) -> Optional[List[Dict[str, Any]]]:
     """Split one stored email body into derived email cards."""
     with db.get_conn() as conn:
-        source = load_source(conn, email_id)
-        if not source:
+        snipped = snip_email_conn(conn, email_id, split_offsets, drafts)
+        if snipped is None:
             return None
-
-        body = normalize_newlines(source["body_text"] or "")
-        offsets = validate_offsets(body, split_offsets)
-        parts = split_body(body, offsets)
-        part_ranges = split_ranges(body, offsets)
-        default_tz = source["default_tz"] or "UTC"
-        reviewed = validate_reviewed_drafts(parts, drafts)
-        now = db.utc_now()
-
-        snip_id = create_snip_record(conn, source, offsets, now)
-        created_ids: List[int] = []
-        undated_ids: List[int] = []
-        for index, segment in enumerate(parts, start=1):
-            parsed = (
-                build_part_from_draft(source, reviewed[index - 1], index, len(parts), default_tz, offsets)
-                if reviewed
-                else build_part(source, segment, index, len(parts), default_tz, offsets)
-            )
-            new_id = email_repo.insert_email(
-                conn,
-                source["case_id"],
-                parsed,
-                ingest_job_id=source["ingest_job_id"],
-                doc_id=source["doc_id"],
-            )
-            created_ids.append(new_id)
-            if not parsed.date_utc:
-                undated_ids.append(new_id)
-            conn.execute(
-                """
-                INSERT INTO email_snip_parts (snip_id, email_id, part_index, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (snip_id, new_id, index, now),
-            )
-            start, end = part_ranges[index - 1]
-            if end > start:
-                record_snipped_mapping(
-                    conn,
-                    case_id=source["case_id"],
-                    source_email_id=source["id"],
-                    source_field="body",
-                    start_offset=start,
-                    end_offset=end,
-                    target_email_id=new_id,
-                    note="Created by manual Snip",
-                    snip_id=snip_id,
-                    part_index=index,
-                )
-            copy_tags(conn, source["id"], new_id, now)
-            if index == 1:
-                copy_attachments(conn, source["id"], new_id, now)
-
-        # Any snip card that ended up without a parseable date is tagged "Undated"
-        # so it stays in the chronology (sorted by created_at) and is easy to find
-        # and fix later, instead of failing the whole snip.
-        if undated_ids:
-            undated_tag = tag_service.create_tag(conn, source["case_id"], UNDATED_TAG)
-            if undated_tag:
-                tag_service.add_tags_to_emails(
-                    conn, source["case_id"], undated_ids, [undated_tag["id"]]
-                )
-
-        conn.execute(
-            """
-            UPDATE emails
-            SET superseded_by_snip_id = ?, superseded_at = ?
-            WHERE id = ?
-            """,
-            (snip_id, now, source["id"]),
-        )
-        updated_source = conn.execute("SELECT * FROM emails WHERE id = ?", (source["id"],)).fetchone()
-        record_audit_event(
-            conn,
-            case_id=source["case_id"],
-            action="email.snipped",
-            entity_type="email",
-            entity_id=source["id"],
-            before=audit_snapshot_email(source),
-            after=audit_snapshot_email(updated_source),
-            metadata={
-                "snip_id": snip_id,
-                "split_offsets": offsets,
-                "created_email_ids": created_ids,
-            },
-        )
+        source, created_ids = snipped["source"], snipped["created_ids"]
         thread_repo.recompute_case_threads(conn, source["case_id"])
 
         rows = fetch_rows(conn, created_ids)
@@ -151,6 +66,123 @@ def snip_email(
 
     duplicate_repo.recompute_duplicate_candidates(int(source["case_id"]))
     return serialized
+
+
+def snip_email_conn(
+    conn: sqlite3.Connection,
+    email_id: int,
+    split_offsets: List[int],
+    drafts: Optional[List[Dict[str, Any]]] = None,
+    *,
+    date_utc_overrides: Optional[Dict[int, Optional[str]]] = None,
+    extra_flags: Optional[List[str]] = None,
+    evidence_note: Optional[str] = None,
+    audit_metadata: Optional[Dict[str, Any]] = None,
+    actor: str = "local",
+) -> Optional[Dict[str, Any]]:
+    """Connection-taking core of snip_email: create the part cards and supersede the
+    source on the caller's connection. Does not commit or recompute threads or
+    duplicate candidates; the caller does that.
+
+    ``date_utc_overrides`` maps a part index to a date the caller has already
+    checked (the reviewed-draft path otherwise re-parses ``date_raw``)."""
+    source = load_source(conn, email_id)
+    if not source:
+        return None
+
+    body = normalize_newlines(source["body_text"] or "")
+    offsets = validate_offsets(body, split_offsets)
+    parts = split_body(body, offsets)
+    part_ranges = split_ranges(body, offsets)
+    default_tz = source["default_tz"] or "UTC"
+    reviewed = validate_reviewed_drafts(parts, drafts)
+    now = db.utc_now()
+
+    snip_id = create_snip_record(conn, source, offsets, now)
+    created_ids: List[int] = []
+    undated_ids: List[int] = []
+    for index, segment in enumerate(parts, start=1):
+        parsed = (
+            build_part_from_draft(source, reviewed[index - 1], index, len(parts), default_tz, offsets)
+            if reviewed
+            else build_part(source, segment, index, len(parts), default_tz, offsets)
+        )
+        if date_utc_overrides and index in date_utc_overrides:
+            parsed.date_utc = date_utc_overrides[index]
+        parsed.flags = [*parsed.flags, *(extra_flags or [])]
+        if evidence_note:
+            parsed.boundary_evidence = [*parsed.boundary_evidence, evidence_note]
+        new_id = email_repo.insert_email(
+            conn,
+            source["case_id"],
+            parsed,
+            ingest_job_id=source["ingest_job_id"],
+            doc_id=source["doc_id"],
+        )
+        created_ids.append(new_id)
+        if not parsed.date_utc:
+            undated_ids.append(new_id)
+        conn.execute(
+            """
+            INSERT INTO email_snip_parts (snip_id, email_id, part_index, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (snip_id, new_id, index, now),
+        )
+        start, end = part_ranges[index - 1]
+        if end > start:
+            record_snipped_mapping(
+                conn,
+                case_id=source["case_id"],
+                source_email_id=source["id"],
+                source_field="body",
+                start_offset=start,
+                end_offset=end,
+                target_email_id=new_id,
+                note="Created by manual Snip",
+                snip_id=snip_id,
+                part_index=index,
+            )
+        copy_tags(conn, source["id"], new_id, now)
+        if index == 1:
+            copy_attachments(conn, source["id"], new_id, now)
+
+    # Any snip card that ended up without a parseable date is tagged "Undated"
+    # so it stays in the chronology (sorted by created_at) and is easy to find
+    # and fix later, instead of failing the whole snip.
+    if undated_ids:
+        undated_tag = tag_service.create_tag(conn, source["case_id"], UNDATED_TAG)
+        if undated_tag:
+            tag_service.add_tags_to_emails(
+                conn, source["case_id"], undated_ids, [undated_tag["id"]]
+            )
+
+    conn.execute(
+        """
+        UPDATE emails
+        SET superseded_by_snip_id = ?, superseded_at = ?
+        WHERE id = ?
+        """,
+        (snip_id, now, source["id"]),
+    )
+    updated_source = conn.execute("SELECT * FROM emails WHERE id = ?", (source["id"],)).fetchone()
+    record_audit_event(
+        conn,
+        case_id=source["case_id"],
+        action="email.snipped",
+        entity_type="email",
+        entity_id=source["id"],
+        before=audit_snapshot_email(source),
+        after=audit_snapshot_email(updated_source),
+        metadata={
+            "snip_id": snip_id,
+            "split_offsets": offsets,
+            "created_email_ids": created_ids,
+            **(audit_metadata or {}),
+        },
+        actor=actor,
+    )
+    return {"source": source, "snip_id": snip_id, "created_ids": created_ids}
 
 
 def load_source(conn: sqlite3.Connection, email_id: int) -> Optional[sqlite3.Row]:

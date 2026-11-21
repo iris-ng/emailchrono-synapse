@@ -107,6 +107,7 @@ import {
   relatedChainEmails,
   threadKey
 } from "../utils/relationFocus";
+import { inferredExportCell } from "../utils/inferred";
 
 type ViewMode = "chrono" | "thread";
 type DropPosition = "before" | "after";
@@ -1142,7 +1143,8 @@ export function CasePage() {
       { name: "Flags", width: 30 },
       { name: "Message ID", width: 36 },
       { name: "Kind", width: 14 },
-      { name: "Tags", width: 28 }
+      { name: "Tags", width: 28 },
+      { name: "Inferred fields", width: 60 }
     ];
     const threadLabels = new Map<string, number>();
     const rows = displayEmails.map((email, index) => {
@@ -1165,7 +1167,8 @@ export function CasePage() {
         email.flags.join("; "),
         safeExcelText(email.message_id ?? ""),
         email.source_kind,
-        safeExcelText(email.tags.map((tag) => tag.name).join("; "))
+        safeExcelText(email.tags.map((tag) => tag.name).join("; ")),
+        safeExcelText(inferredExportCell(email))
       ];
     });
 

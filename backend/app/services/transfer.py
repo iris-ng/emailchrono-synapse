@@ -162,11 +162,36 @@ def export_case(case_id: int) -> bytes:
             if blob.exists():
                 zf.writestr(f"sources/{shas}", blob.read_bytes())
 
-        xlsx = _build_chronology_xlsx(case_dict, emails, tags, email_tags)
+        xlsx = _build_chronology_xlsx(case_dict, emails, tags, email_tags, flags)
         if xlsx is not None:
             zf.writestr("chronology.xlsx", xlsx)
 
     return buffer.getvalue()
+
+
+INFERRED_COLUMN_LABELS = {
+    "inferred_from": "from",
+    "inferred_to": "to",
+    "inferred_subject": "subject",
+    "inferred_date": "date",
+    "inferred_timezone": "time zone",
+}
+
+
+def _inferred_fields_by_email(flags: List[Dict[str, Any]]) -> Dict[int, str]:
+    """One cell per email listing AI-inferred fields and their evidence, e.g.
+    'to (From: Mary Lim <...>); time zone (...)'. A guess must not read as parsed evidence."""
+    found: Dict[int, List[str]] = {}
+    for flag in flags:
+        label = INFERRED_COLUMN_LABELS.get(flag.get("flag"))
+        if not label:
+            continue
+        try:
+            evidence = (json.loads(flag.get("detail_json") or "{}") or {}).get("evidence") or ""
+        except (TypeError, ValueError):
+            evidence = ""
+        found.setdefault(flag["email_id"], []).append(f"{label} ({evidence})" if evidence else label)
+    return {email_id: "; ".join(parts) for email_id, parts in found.items()}
 
 
 def _build_chronology_xlsx(
@@ -174,6 +199,7 @@ def _build_chronology_xlsx(
     emails: List[Dict[str, Any]],
     tags: List[Dict[str, Any]],
     email_tags: List[Dict[str, Any]],
+    flags: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[bytes]:
     """Human-readable chronology sheet mirroring the frontend export columns.
 
@@ -190,12 +216,14 @@ def _build_chronology_xlsx(
     tags_by_email: Dict[int, List[str]] = {}
     for et in email_tags:
         tags_by_email.setdefault(et["email_id"], []).append(tag_name.get(et["tag_id"], ""))
+    inferred_by_email = _inferred_fields_by_email(flags or [])
 
     headers = [
         "No", "Doc ID", "Date", "Thread", "From", "To", "Cc", "Subject", "Body",
         "Source", "Important", "Notes", "Confidence", "Flags", "Message ID", "Kind", "Tags",
+        "Inferred fields",
     ]
-    widths = [8, 12, 22, 12, 30, 34, 28, 42, 80, 48, 12, 42, 14, 30, 36, 14, 28]
+    widths = [8, 12, 22, 12, 30, 34, 28, 42, 80, 48, 12, 42, 14, 30, 36, 14, 28, 60]
 
     # Chronological view: visible rows only (skip soft-deleted / superseded).
     visible = [
@@ -242,6 +270,7 @@ def _build_chronology_xlsx(
             safe_excel_text(email.get("message_id")),
             safe_excel_text(email.get("source_kind")),
             safe_excel_text("; ".join(tags_by_email.get(email["id"], []))),
+            safe_excel_text(inferred_by_email.get(email["id"], "")),
         ])
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
