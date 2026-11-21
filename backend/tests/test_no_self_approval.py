@@ -13,6 +13,20 @@ SERVER_FILES = sorted(BACKEND.glob("*_server*.py"))
 EXPECTED_TOOLS = {
     "resolve_case_duplicates_server.py": {"resolve_case_duplicates"},
     "review_chronology_server.py": {"review_chronology"},
+    # Hand-written baseline for the comparison: one tool per adapter, still no approval tool.
+    "small_tools_server.py": {
+        "check_case_ready_for_duplicate_review",
+        "list_pending_duplicate_pairs",
+        "propose_duplicate_decision",
+        "save_duplicate_plan",
+        "apply_duplicate_plan",
+        "check_case_ready_for_chronology_review",
+        "list_chronology_problem_cards",
+        "propose_splits",
+        "propose_fields",
+        "save_chronology_plan",
+        "apply_chronology_plan",
+    },
 }
 
 FORBIDDEN_MODULES = ("app.review.approval", "app.api", "app.main", "httpx", "requests", "urllib", "http.client", "aiohttp")

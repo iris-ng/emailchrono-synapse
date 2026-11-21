@@ -188,18 +188,24 @@ def test_value_in_the_material_with_the_wrong_evidence_gets_the_real_line(plante
     proposal = chronology.propose_fields(email_id, chronology.propose_splits(email_id))
     change = _changes(proposal["parts"][1])["to"]
     assert change["new"] == [MARY]
-    assert change["evidence"] == f"Parsed sender: {MARY}"
+    # A borrowed value's evidence is the rule that gives it (reply marker and replier),
+    # never the model's citation.
+    assert MARY in change["evidence"] and FR_LINE in change["evidence"]
     assert change["inferred"] == ["inferred_to"]
 
 
-def test_subject_taken_from_body_text_is_still_inferred(planted_case, model):
+def test_subject_taken_from_body_text_is_not_used(planted_case, model):
+    # A subject must come from a Subject: line in the email or from its reply or
+    # forward relation. A phrase from the body is a guess, so it is not used.
     model.OVERRIDES["fields"] = lambda text: {"parts": [{
         "part": 1, "sender": None, "recipients": None, "date": None, "note": "",
         "subject": {"value": "revised ceiling drawings",
                     "evidence": "Can you confirm when the revised ceiling drawings will be ready? The"},
     }]}
     proposal = chronology.propose_fields(planted_case["card"]("01_drawings_reply.eml", 1), None)
-    assert _changes(proposal["parts"][0])["subject"]["inferred"] == ["inferred_subject"]
+    assert "subject" not in _changes(proposal["parts"][0])
+    [rejected] = [r for r in proposal["parts"][0]["rejected"] if r["field"] == "subject"]
+    assert "Revised drawings" in rejected["why"]  # the reply rule's answer, for the person to choose
 
 
 def test_the_model_is_told_about_a_date_conflict(planted_case, model):

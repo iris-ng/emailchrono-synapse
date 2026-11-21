@@ -123,6 +123,75 @@ def test_runner_bench_approver_approves_and_logs(planted_case, tmp_path):
     assert plans.get_plan(plan_id)["status"] == "applied"
 
 
+def _last_tool_body(messages):
+    return json.loads([m for m in messages if m.get("role") == "tool"][-1]["content"])
+
+
+def test_runner_small_tools_mode_waits_on_apply_then_applies(planted_case, tmp_path):
+    """Many-tools mode: the model chains the adapters itself; the runner pauses on
+    the apply tool exactly as it does on the composed tool."""
+    case_id = planted_case["case_id"]
+    decisions = []
+
+    def propose(messages):
+        pairs = _last_tool_body(messages)["pairs"]
+        return [("propose_duplicate_decision", {"pair": pair}) for pair in pairs]
+
+    def save(messages):
+        tool_bodies = [json.loads(m["content"]) for m in messages if m.get("role") == "tool"]
+        decisions.extend(body for body in tool_bodies if "decision" in body)
+        return [("save_duplicate_plan", {"case_id": case_id, "decisions": decisions})]
+
+    script = [
+        [("list_pending_duplicate_pairs", {"case_id": case_id})],
+        propose,
+        save,
+        lambda messages: [("apply_duplicate_plan", {"case_id": case_id, "plan_id": _last_plan_id(messages)})],
+        "done",
+    ]
+    llm = FakeLlm(script)
+    result = asyncio.run(
+        runner.run_task(
+            "Clean up duplicates in case 1",
+            llm=llm,
+            tools_mode="small",
+            approver="bench-approve",
+            log_path=tmp_path / "log.jsonl",
+            approval_timeout=20,
+            poll_seconds=0.2,
+        )
+    )
+    assert result["final_text"] == "done"
+    assert _last_tool_body(llm.seen[-1])["status"] == "applied"
+    events = [json.loads(line) for line in (tmp_path / "log.jsonl").read_text().splitlines()]
+    tools_event = next(e for e in events if e["event"] == "tools")
+    assert len(tools_event["names"]) == 11
+
+
+def test_small_mode_gets_the_same_chaining_guide_synapse_got(planted_case, tmp_path):
+    """Fairness: Synapse composed each tool from an intent that spelled out the
+    steps. In small mode the agent gets that same text; in composed mode it does not
+    (the composed tools already contain it)."""
+    prompts = {}
+    for mode in ("composed", "small"):
+        llm = FakeLlm(["done"])
+        asyncio.run(runner.run_task("hi", llm=llm, tools_mode=mode, log_path=tmp_path / f"{mode}.jsonl"))
+        prompts[mode] = llm.seen[0][0]["content"]
+    assert runner.SMALL_TOOLS_GUIDE not in prompts["composed"]
+    assert prompts["small"] == prompts["composed"] + "\n\n" + runner.SMALL_TOOLS_GUIDE
+    guide = runner.SMALL_TOOLS_GUIDE
+    for step in ("check_case_ready_for_duplicate_review", "propose_duplicate_decision", "save_duplicate_plan",
+                 "apply_duplicate_plan", "propose_splits(card['email_id'])", "propose_fields(card['email_id'], split)",
+                 "save_chronology_plan(case_id, proposals", "apply_chronology_plan(case_id, plan_id)"):
+        assert step in guide
+
+
+def test_system_prompt_fits_both_tool_modes():
+    prompt = runner.SYSTEM_PROMPT
+    assert "without plan_id" not in prompt  # composed-only wording
+    assert "plan_id" in prompt and "applies" in prompt
+
+
 def test_runner_gives_up_after_timeout(planted_case, tmp_path):
     llm = FakeLlm(_script(planted_case["case_id"]))
     _run(llm, tmp_path, timeout=0.5)

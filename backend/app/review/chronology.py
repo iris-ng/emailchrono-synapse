@@ -33,7 +33,7 @@ from ..repos.duplicates import recompute_duplicate_candidates
 from ..repos.emails import update_email_fields
 from ..repos.threads import recompute_case_threads
 from ..services.dates import TZ_ABBREVIATIONS, coerce_datetime, resolve_zone
-from ..services.email_text import strip_quote_prefixes
+from ..services.email_text import CJK_WROTE_RE, strip_quote_prefixes
 from ..services.snip import (
     SnipError,
     build_part,
@@ -274,6 +274,45 @@ def _explicit_offset(date_raw: Optional[str]) -> Optional[int]:
     return int(parts[9]) // 60
 
 
+ZONE_WINDOW = timedelta(days=60)
+
+
+def _offset_text(minutes: int) -> str:
+    sign = "+" if minutes >= 0 else "-"
+    return f"{sign}{abs(minutes) // 60:02d}{abs(minutes) % 60:02d}"
+
+
+def pick_sender_offset(candidates: List[Dict[str, Any]], near: Optional[datetime]) -> Optional[Dict[str, Any]]:
+    """Which of the sender's dated emails gives the time zone, if any.
+
+    candidates: {email_id, subject, date_raw, date_utc, offset (minutes)}. Clocks
+    change and people travel, so an offset is used only when it is unambiguous:
+    every one of the sender's emails within 60 days agrees; or, if none is that
+    close, the sender has a single offset across the case. Returns
+    {"candidate": ...}, {"ambiguous": True, "why": ...}, or None when there is none."""
+    if not candidates:
+        return None
+
+    def distance(candidate: Dict[str, Any]) -> float:
+        if near is None or not candidate.get("date_utc"):
+            return 0.0
+        return abs((datetime.fromisoformat(candidate["date_utc"]) - near).total_seconds())
+
+    if near is not None:
+        close = [c for c in candidates if c.get("date_utc") and distance(c) <= ZONE_WINDOW.total_seconds()]
+        if close:
+            offsets = sorted({c["offset"] for c in close})
+            if len(offsets) > 1:
+                listed = ", ".join(_offset_text(o) for o in offsets)
+                return {"ambiguous": True, "why": f"This sender's emails within 60 days use different time zones ({listed})"}
+            return {"candidate": min(close, key=distance)}
+    offsets = sorted({c["offset"] for c in candidates})
+    if len(offsets) > 1:
+        listed = ", ".join(_offset_text(o) for o in offsets)
+        return {"ambiguous": True, "why": f"This sender's emails use different time zones ({listed}) and none is within 60 days of this one"}
+    return {"candidate": min(candidates, key=distance)}
+
+
 def sender_zone(
     conn: sqlite3.Connection,
     case_id: int,
@@ -283,14 +322,15 @@ def sender_zone(
 ) -> Optional[Dict[str, Any]]:
     """Step 4: the time zone of the same sender's other dated emails in the case.
 
-    Matches by address, or by display name when the sender has no address. Uses
-    the dated email nearest in time to ``near``. Returns None if there is none."""
+    Matches by address, or by display name when the sender has no address. See
+    pick_sender_offset for when an offset is used. Returns None if the sender has
+    no dated email, or {"ambiguous": True, "why"} when the offsets disagree."""
     address = _address(sender)
     name = _display_name(sender).lower()
     if not address and not name:
         return None
     excluded = {int(i) for i in exclude_ids}
-    best = None
+    candidates = []
     for row in conn.execute(
         """
         SELECT id, from_addr, subject, date_raw, date_utc FROM emails
@@ -303,22 +343,128 @@ def sender_zone(
             continue
         same = _address(row["from_addr"]) == address if address else _display_name(row["from_addr"]).lower() == name
         offset = _explicit_offset(row["date_raw"]) if same else None
-        if offset is None:
-            continue
-        distance = 0.0
-        if near is not None and row["date_utc"]:
-            distance = abs((datetime.fromisoformat(row["date_utc"]) - near).total_seconds())
-        if best is None or distance < best[0]:
-            best = (distance, row, offset)
-    if best is None:
-        return None
-    _, row, offset = best
+        if offset is not None:
+            candidates.append(
+                {"email_id": row["id"], "subject": row["subject"], "date_raw": row["date_raw"], "date_utc": row["date_utc"], "offset": offset}
+            )
+    picked = pick_sender_offset(candidates, near)
+    if picked is None or picked.get("ambiguous"):
+        return picked
+    chosen = picked["candidate"]
     return {
-        "offset_minutes": offset,
-        "zone": timezone(timedelta(minutes=offset)),
-        "email_id": row["id"],
-        "evidence": f'Same sender\'s email #{row["id"]} ("{row["subject"]}") is dated "{row["date_raw"]}"',
+        "offset_minutes": chosen["offset"],
+        "zone": timezone(timedelta(minutes=chosen["offset"])),
+        "email_id": chosen["email_id"],
+        "evidence": f'Same sender\'s email #{chosen["email_id"]} ("{chosen["subject"]}") is dated "{chosen["date_raw"]}"',
     }
+
+
+# --- relations: when a value may come from another email ------------------------------------
+#
+# A subject or recipient is borrowed from the email above only when code knows how
+# this email is attached to it: quoted in a reply, or forwarded. With no such
+# relation the field is left as it is. See docs (inference-rules design).
+
+REPLY_MARKER_KINDS = {"on_wrote", "french", "german", "spanish", "dutch", "italian", "portuguese", "original_message"}
+FORWARD_MARKER_KINDS = {"forwarded"}
+_JOIN_LINES = 3  # a From:/Sent: block up to 3 lines below a forward or Original Message line belongs to it
+_REPLY_PREFIX = re.compile(r"^\s*(?:re|aw|antw|sv|vs|res|rif)\s*(?:\[\d+\])?\s*:\s*", re.I)
+_FORWARD_PREFIX = re.compile(r"^\s*(?:fwd?|tr|wg|rv|enc)\s*(?:\[\d+\])?\s*:\s*", re.I)
+UNKNOWN_RELATION_WHY = "How this email is attached to the email above is unknown (no reply or forward marker)"
+NOT_QUOTED_WHY = "This email is not quoted in another one"
+
+
+def _relation_for_kind(kind: str, line: str) -> str:
+    if kind in REPLY_MARKER_KINDS or (kind == "cjk" and CJK_WROTE_RE.search(line)):
+        return "reply"
+    if kind in FORWARD_MARKER_KINDS:
+        return "forward"
+    return "unknown"
+
+
+def relation_of(text: str, start: int = 0) -> Dict[str, str]:
+    """How the email whose header starts at ``start`` in ``text`` is attached to the
+    email above it: {"relation": "reply" | "forward" | "unknown", "marker": line}.
+
+    Reads the marker on the header's first line. A From:/Sent: header block counts
+    as part of a forward or "Original Message" line up to 3 lines above it."""
+    text = normalize_newlines(text or "")
+    head = re.search(r"\S", text[start:])
+    if head is None:
+        return {"relation": "unknown", "marker": ""}
+    line_start = text.rfind("\n", 0, start + head.start()) + 1
+    markers = problem_finder.markers_in(text)
+    here = next((m for m in markers if m["offset"] == line_start), None)
+    if here is None:
+        return {"relation": "unknown", "marker": ""}
+    if here["kind"] not in REPLY_MARKER_KINDS | FORWARD_MARKER_KINDS:
+        for above in reversed([m for m in markers if m["offset"] < line_start]):
+            if text.count("\n", above["offset"], line_start) > _JOIN_LINES:
+                break
+            if above["kind"] in FORWARD_MARKER_KINDS or above["kind"] == "original_message":
+                here = above
+                break
+    return {"relation": _relation_for_kind(here["kind"], here["line"]), "marker": here["line"]}
+
+
+def borrowed_subject(relation: Optional[str], above_subject: Optional[str], position: str) -> Tuple[Optional[str], str]:
+    """(subject, "") from the email above, or (None, why not).
+
+    reply: the subject above minus one "Re:" if this email is the first of its
+    thread, unchanged if it is in the middle. forward: minus one "Fwd:"."""
+    above = (above_subject or "").strip()
+    if relation is None:
+        return None, f"{NOT_QUOTED_WHY}, so its subject is not taken from another email."
+    if relation not in ("reply", "forward"):
+        return None, f"{UNKNOWN_RELATION_WHY}, so its subject is not taken from that email."
+    if not above or above == "(no subject)":
+        return None, "The email above has no subject to take."
+    if relation == "forward":
+        match = _FORWARD_PREFIX.match(above)
+        if not match:
+            return None, f'The forward\'s subject "{above}" does not start with "Fwd:", so the original subject is not known.'
+        return above[match.end():].strip(), ""
+    match = _REPLY_PREFIX.match(above)
+    if not match:
+        return None, f'The reply\'s subject "{above}" does not start with "Re:", so this email\'s subject is not known.'
+    if position == "first":
+        return above[match.end():].strip(), ""
+    if position == "middle":
+        return above, ""
+    return None, "It is not clear whether this email starts its thread, so its subject is not known."
+
+
+def borrowed_recipient(relation: Optional[str], above_sender: Optional[str], own_sender: Optional[str]) -> Tuple[Optional[str], str]:
+    """(recipient, "") from the email above, or (None, why not). In a reply or a
+    forward, the quoted email was most likely sent to the person replying or
+    forwarding, unless that person is its own sender."""
+    if relation is None:
+        return None, f"{NOT_QUOTED_WHY}, so its recipient is not taken from another email."
+    if relation not in ("reply", "forward"):
+        return None, f"{UNKNOWN_RELATION_WHY}, so its recipient is not taken from that email."
+    address = _address(above_sender)
+    if not address:
+        return None, "The sender of the email above has no address, so it cannot be used as the recipient."
+    if address == _address(own_sender):
+        return None, "The email above is from this email's own sender, so its recipient is not known."
+    return (above_sender or "").strip(), ""
+
+
+def _position_below(text: str) -> str:
+    """first / middle / unknown: what is quoted below this email's own first line."""
+    below = problem_finder.find_reply_markers(text)
+    if not below:
+        return "first"
+    return "middle" if relation_of(text, below[0]["offset"])["relation"] == "reply" else "unknown"
+
+
+def _own_header_line(value: str, own: str, labels: Tuple[str, ...]) -> Optional[str]:
+    """The 'To:'/'Subject:'-style line of this email's own text that holds the value, if any."""
+    wanted = _squash(value).lower()
+    for line in _strip_quote_marks(own).split("\n"):
+        if re.match(rf"^\s*\*?(?:{'|'.join(labels)})\s*\*?\s*:", line, re.I) and wanted in _squash(line).lower():
+            return line.strip()
+    return None
 
 
 # --- the model call ---------------------------------------------------------------
@@ -328,6 +474,9 @@ DEFAULT_MODEL = "gpt-5.6-luna"
 # Tests and offline benchmarks only: "module:function" called as function(task, text)
 # instead of OpenAI. Set in the environment of the process that plans.
 MODEL_STUB_ENV = "EMAILCHRONO_REVIEW_MODEL_STUB"
+# Benchmarks: a JSONL path; every AI call appends {task, ok, model, tokens, seconds}.
+# Composed tools hide these calls from the agent log, so the comparison reads them here.
+USAGE_LOG_ENV = "EMAILCHRONO_REVIEW_USAGE_LOG"
 MODEL_TIMEOUT_SECONDS = 90
 MAX_PART_CHARS = 12000
 
@@ -407,8 +556,8 @@ The rule-based hints may be incomplete or wrong. Never invent or reword a line. 
 FIELDS_INSTRUCTIONS = """You review the header fields of one card (or each part of a card being split) in a legal email chronology. Each part is one email. Fix only fields that are missing or clearly wrong in "Parsed ...". Return one entry per part, in order, using its part number.
 
 - sender: who wrote this part, as "Name <address>" when the address is known. Only if the parsed sender is missing or wrong (for example it starts with "AM," or "PM,", or has no address).
-- recipients: who this part was sent to, only if parsed recipients are "(none)". Copy each one as "Name <address>" from the material; never use a name from a greeting alone. For an email quoted inside a reply, the sender of the email above it is usually the recipient.
-- subject: only if missing or carried over from the email above. For an email quoted inside a reply, it is usually the subject of the reply without "Re:".
+- recipients: who this part was sent to, only if parsed recipients are "(none)". Copy each one as "Name <address>" from the material; never use a name from a greeting alone, and never the part's own sender. If the part is attached to the email above as a reply or a forward, the sender of the email above is usually the recipient. If it is attached as "unknown", use null unless a To: line is written in the part itself.
+- subject: only if missing or carried over from the email above. If attached as a reply: the first email of a thread has the reply's subject without "Re:"; an email in the middle of a thread keeps the same subject. If attached as a forward: the forward's subject without "Fwd:". If attached as "unknown", use null unless a Subject: line is written in the part itself.
 - date: only if this part's date is missing or may be in the wrong time zone. quote = the date and time exactly as written in this part's text or in the header text above the card, copied character for character. local_iso = the same date and time as ISO 8601 local time without a zone, like 2024-03-12T18:45.
 - evidence: a short snippet copied exactly from the material that contains the value.
 
@@ -432,8 +581,23 @@ def _openai_client():
     return _OPENAI_CLIENT
 
 
+def _log_usage(task: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    path = os.environ.get(USAGE_LOG_ENV, "").strip()
+    if path:
+        try:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"ts": time.time(), "task": task, "ok": result["ok"], **result.get("usage", {})}) + "\n")
+        except OSError:
+            pass  # a benchmark log must never break a review
+    return result
+
+
 def _ask_model(task: str, instructions: str, text: str, schema: Dict[str, Any]) -> Dict[str, Any]:
     """One structured-output call. Returns {ok, data, usage} or {ok: False, error}; never raises."""
+    return _log_usage(task, _ask_model_once(task, instructions, text, schema))
+
+
+def _ask_model_once(task: str, instructions: str, text: str, schema: Dict[str, Any]) -> Dict[str, Any]:
     started = time.monotonic()
     usage: Dict[str, Any] = {"model": "", "input_tokens": 0, "output_tokens": 0}
     try:
@@ -460,7 +624,7 @@ def _ask_model(task: str, instructions: str, text: str, schema: Dict[str, Any]) 
         message = " ".join(f"{type(exc).__name__}: {exc}".split())
         return {"ok": False, "error": message[:300], "usage": {**usage, "seconds": round(time.monotonic() - started, 2)}}
     if not isinstance(data, dict):
-        return {"ok": False, "error": "the AI answer was not a JSON object", "usage": usage}
+        return {"ok": False, "error": "the AI answer was not a JSON object", "usage": {**usage, "seconds": round(time.monotonic() - started, 2)}}
     usage["seconds"] = round(time.monotonic() - started, 2)
     return {"ok": True, "data": data, "usage": usage}
 
@@ -604,6 +768,34 @@ PROBLEM_TEXT = {
 }
 
 
+_POSITION_TEXT = {
+    "first": "it is the first email of its thread",
+    "middle": "it is in the middle of its thread",
+    "unknown": "its place in the thread is unknown",
+}
+
+
+def _relation_line(part: Dict[str, Any]) -> str:
+    if part.get("relation") is None:
+        return "Attached to the email above as: none (this is the top email of the card)"
+    marker = f' (marker: "{part["marker"]}")' if part.get("marker") else ""
+    return f"Attached to the email above as: {part['relation']}{marker}; {_POSITION_TEXT[part['position']]}"
+
+
+def _borrow_evidence(field: str, part: Dict[str, Any], value: str, above_subject: str = "") -> str:
+    """Why a borrowed value was written: the rule and the marker it rests on."""
+    marker = f' ("{part["marker"]}")' if part.get("marker") else ""
+    if field == "to":
+        if part["relation"] == "forward":
+            return f"Forwarded by {value}{marker}; the forwarded email was most likely sent to that person."
+        return f"Quoted in a reply sent by {value}{marker}; the quoted email was most likely sent to that person."
+    if part["relation"] == "forward":
+        return f'Forwarded with subject "{above_subject}"{marker}; the original subject is that without "Fwd:".'
+    if part["position"] == "first":
+        return f'Quoted in a reply with subject "{above_subject}"{marker}; as the first email of its thread, its subject is that without "Re:".'
+    return f'Quoted in a reply with subject "{above_subject}"{marker}; it is in the middle of its thread, so it has the same subject.'
+
+
 def _material(row: sqlite3.Row, above: Optional[sqlite3.Row], header: str, parts: List[Dict[str, Any]], issues: List[str]) -> str:
     lines = [f"CARD #{row['id']}", f"Case time zone: {row['default_tz'] or 'UTC'}"]
     shown = [PROBLEM_TEXT[code] for code in issues if code in PROBLEM_TEXT and not (code == "merged" and len(parts) > 1)]
@@ -626,6 +818,7 @@ def _material(row: sqlite3.Row, above: Optional[sqlite3.Row], header: str, parts
             text = text[:MAX_PART_CHARS] + "\n[... text cut for length ...]"
         lines += [
             f"PART {part['part_index']} OF {len(parts)}",
+            _relation_line(part),
             f"Parsed sender: {part['from_addr'] or '(none)'}",
             f"Parsed recipients: {', '.join(part['to']) or '(none)'}",
             f"Parsed subject: {part['subject'] or '(none)'}",
@@ -651,12 +844,25 @@ def _prepare(conn: sqlite3.Connection, row: sqlite3.Row, split_lines: List[str])
     offsets, split_errors = split_offsets_for_lines(row["body_text"] or "", split_lines) if split_lines else ([], [])
     parts = _split_parts(row, offsets) if offsets else [_single_part(row)]
     body = normalize_newlines(row["body_text"] or "")
+    # How part 1 is attached to the email it is quoted in (None: not quoted at all).
+    top_relation: Dict[str, Optional[str]] = {"relation": None, "marker": ""}
+    if above is not None:
+        parent = normalize_newlines(above["body_text"] or "")
+        at = parent.find(header) if header else -1
+        top_relation = relation_of(parent, at) if at >= 0 else {"relation": "unknown", "marker": ""}
     for part in parts:
         part["own_text"] = part["text"] + ("\n" + header if header and part["part_index"] == 1 else "")
         if part["part_index"] == 1:
             part["above_subject"] = above["subject"] if above is not None else None
+            part.update(top_relation)
         else:
             part["above_subject"] = parts[part["part_index"] - 2]["subject"]
+            part.update(relation_of(part["text"]))
+    for index, part in enumerate(parts):
+        if index + 1 < len(parts):
+            part["position"] = "middle" if parts[index + 1]["relation"] == "reply" else "unknown"
+        else:
+            part["position"] = _position_below(part["text"])
     return {
         "row": row,
         "issues": issues,
@@ -750,6 +956,8 @@ def _resolve_date(conn: sqlite3.Connection, prepared: Dict[str, Any], part: Dict
     else:
         near = datetime.fromisoformat(first["date_utc"])
         history = sender_zone(conn, row["case_id"], sender, near, exclude_ids=[row["id"]])
+        if history and history.get("ambiguous"):
+            return {"ok": False, "why": f"{history['why']}, so the time zone is left for you."}
         if history:
             zone, zone_source, zone_evidence, zone_email_id = history["zone"], "sender", history["evidence"], history["email_id"]
         else:
@@ -792,13 +1000,27 @@ def _clean_answers(data: Any) -> Dict[int, Dict[str, Any]]:
     return answers
 
 
-def _review_part(conn: sqlite3.Connection, prepared: Dict[str, Any], part: Dict[str, Any], answer: Dict[str, Any]) -> Dict[str, Any]:
+def _review_part(
+    conn: sqlite3.Connection,
+    prepared: Dict[str, Any],
+    part: Dict[str, Any],
+    answer: Dict[str, Any],
+    previous: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """previous: the reviewed values of the part above (split parts 2 and later)."""
     issues = prepared["issues"] if not prepared["offsets"] else []
     corpus = prepared["material"]
     changes: List[Dict[str, Any]] = []
     rejected: List[Dict[str, Any]] = []
     left: List[Dict[str, Any]] = []
     after = {key: part[key] for key in ("from_addr", "to", "cc", "subject", "date_utc", "date_raw", "body_text")}
+    if part["part_index"] == 1:
+        above_row = prepared["above"]
+        above_sender = above_row["from_addr"] if above_row is not None else None
+        above_subject = above_row["subject"] if above_row is not None else None
+    else:
+        above_sender = (previous or {}).get("from_addr")
+        above_subject = (previous or {}).get("subject")
 
     sender = answer.get("sender") if isinstance(answer.get("sender"), dict) else None
     if sender:
@@ -825,28 +1047,54 @@ def _review_part(conn: sqlite3.Connection, prepared: Dict[str, Any], part: Dict[
         else:
             checks = [_check_text(value, evidence, corpus, part["own_text"]) for value in values]
             failed = next((why for ok, why, _, _ in checks if not ok), None)
+            own_lines = [_own_header_line(value, part["own_text"], ("to", "cc")) for value in values]
             if failed:
                 rejected.append({"field": "to", "value": values, "why": failed})
-            else:
-                used = " | ".join(dict.fromkeys(line for _, _, _, line in checks))
-                inferred = any(flag for _, _, flag, _ in checks) or not _is_header(used, "to")
-                changes.append(_change("to", part["to"], values, used, ["inferred_to"] if inferred else []))
+            elif all(own_lines):
+                # Written on this email's own To:/Cc: line: read, not borrowed.
+                changes.append(_change("to", part["to"], values, " | ".join(dict.fromkeys(own_lines)), []))
                 after["to"] = values
+            else:
+                expected, why = borrowed_recipient(part["relation"], above_sender, after["from_addr"])
+                if expected is None:
+                    rejected.append({"field": "to", "value": values, "why": why})
+                elif {_address(value) for value in values} != {_address(expected)}:
+                    rejected.append({
+                        "field": "to", "value": values,
+                        "why": f"The AI proposed {', '.join(values)}, but the {part['relation']} rule gives {expected}. A person should choose.",
+                    })
+                else:
+                    changes.append(_change("to", part["to"], [expected], _borrow_evidence("to", part, expected), ["inferred_to"]))
+                    after["to"] = [expected]
 
     subject = answer.get("subject") if isinstance(answer.get("subject"), dict) else None
     if subject:
         value = str(subject.get("value") or "").strip()
         current = part["subject"] or ""
         carried = current in ("", "(no subject)") or (part["above_subject"] is not None and current == part["above_subject"])
-        ok, why, inferred, evidence = _check_text(value, str(subject.get("evidence") or ""), corpus, part["own_text"])
-        inferred = inferred or not _is_header(evidence, "subject")
+        own_line = _own_header_line(value, part["own_text"], ("subject",)) if value else None
         if not carried:
             rejected.append({"field": "subject", "value": value, "why": "The card already has its own subject."})
-        elif not ok:
-            rejected.append({"field": "subject", "value": value, "why": why})
-        elif value != current:
-            changes.append(_change("subject", current, value, evidence, ["inferred_subject"] if inferred else []))
-            after["subject"] = value
+        elif not value:
+            rejected.append({"field": "subject", "value": value, "why": "The AI returned an empty value."})
+        elif own_line:
+            # Written on this email's own Subject: line: read, not borrowed.
+            if value != current:
+                changes.append(_change("subject", current, value, own_line, []))
+                after["subject"] = value
+        else:
+            expected, why = borrowed_subject(part["relation"], above_subject, part["position"])
+            if expected is None:
+                rejected.append({"field": "subject", "value": value, "why": why})
+            elif _squash(value).lower() != _squash(expected).lower():
+                rejected.append({
+                    "field": "subject", "value": value,
+                    "why": f'The AI proposed "{value}", but the {part["relation"]} rule gives "{expected}". A person should choose.',
+                })
+            elif expected != current:
+                evidence = _borrow_evidence("subject", part, expected, above_subject=(above_subject or "").strip())
+                changes.append(_change("subject", current, expected, evidence, ["inferred_subject"]))
+                after["subject"] = expected
 
     conflict = "chain_date_conflict" in issues and _explicit_offset(part["date_raw"]) is None
     date_needed = part["is_new"] or not part["date_utc"] or conflict
@@ -896,7 +1144,10 @@ def _review_card(
     so save_chronology_plan can run it again on the stored answer."""
     prepared = _prepare(conn, row, split_lines)
     answers = _clean_answers(model_output) if called_model and not model_error else {}
-    reviewed = [_review_part(conn, prepared, part, answers.get(part["part_index"], {})) for part in prepared["parts"]]
+    reviewed: List[Dict[str, Any]] = []
+    for part in prepared["parts"]:
+        previous = reviewed[-1]["after"] if reviewed else None
+        reviewed.append(_review_part(conn, prepared, part, answers.get(part["part_index"], {}), previous))
     left = []
     if model_error:
         left.append({"part_index": None, "problem": "ai_error", "why": f"AI review failed: {model_error}"})

@@ -112,6 +112,11 @@ def _raw_markers(body: str) -> List[Dict[str, Any]]:
     return [found[offset] for offset in sorted(found)]
 
 
+def markers_in(text: Optional[str]) -> List[Dict[str, Any]]:
+    """Every marker line in the text, the first line included: {kind, offset, line}, top to bottom."""
+    return _raw_markers((text or "").replace("\r\n", "\n").replace("\r", "\n"))
+
+
 def find_reply_markers(body: Optional[str]) -> List[Dict[str, Any]]:
     """Reply markers and sender-and-date lines below a card's first line.
 
