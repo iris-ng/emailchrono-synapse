@@ -263,7 +263,9 @@ async def wait_for_decision(
     start = time.monotonic()
     log("approval_wait", plan_id=plan_id, approver=approver)
     while True:
-        plan = plans.get_plan(plan_id)
+        # Also notices a plan gone stale: if a person edits a card the plan touches,
+        # the web app disables Approve, so there is nothing left to wait for.
+        plan = plans.refresh_status(plan_id)
         status = plan["status"] if plan else "missing"
         if status != "planned":
             log("approval_result", plan_id=plan_id, status=status, waited_s=round(time.monotonic() - start, 2))
@@ -355,6 +357,9 @@ async def run_task(
                     elif decision == "declined":
                         text = json.dumps({**body, "status": "declined", "changed": False,
                                            "message": f"The user declined plan {body['plan_id']} in emailchrono. Nothing was changed. Do not apply it."})
+                    elif decision == "stale":
+                        text = json.dumps({**body, "status": "stale", "changed": False,
+                                           "message": f"The case changed in emailchrono after plan {body['plan_id']} was built (a card it touches was edited), so it can no longer be approved. Nothing was changed. Build a new plan."})
                     elif decision == "timeout":
                         text = json.dumps({**body, "changed": False,
                                            "message": f"The user did not approve plan {body['plan_id']} within {int(approval_timeout)} seconds. Nothing was changed. Ask them to approve it, then try again."})

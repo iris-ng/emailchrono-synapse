@@ -187,6 +187,22 @@ def get_plan(plan_id: str) -> Optional[Dict[str, Any]]:
         return _row_to_plan(row)
 
 
+def refresh_status(plan_id: str) -> Optional[Dict[str, Any]]:
+    """The plan with its status brought up to date: expired if past its expiry, or
+    stale if a row it touches changed while it waited for approval (the web app
+    will not let anyone approve it then). Changes no case data. None if missing."""
+    with db.get_conn() as conn:
+        row = conn.execute("SELECT * FROM review_plans WHERE id = ?", (plan_id,)).fetchone()
+        if row is None:
+            return None
+        expire_if_due(conn, row)
+        row = conn.execute("SELECT * FROM review_plans WHERE id = ?", (plan_id,)).fetchone()
+        if row["status"] == "planned" and compute_fingerprint(conn, json.loads(row["touched_json"])) != row["fingerprint"]:
+            conn.execute("UPDATE review_plans SET status = 'stale' WHERE id = ? AND status = 'planned'", (plan_id,))
+            row = conn.execute("SELECT * FROM review_plans WHERE id = ?", (plan_id,)).fetchone()
+        return _row_to_plan(row)
+
+
 def list_plans(case_id: int, statuses: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
     with db.get_conn() as conn:
         for row in conn.execute("SELECT * FROM review_plans WHERE case_id = ?", (case_id,)).fetchall():

@@ -192,6 +192,41 @@ def test_system_prompt_fits_both_tool_modes():
     assert "plan_id" in prompt and "applies" in prompt
 
 
+def test_refresh_status_marks_a_waiting_plan_stale_when_a_card_it_touches_changes(planted_case):
+    from app.repos import emails as email_repo
+    from app.review import dedupe
+
+    case_id = planted_case["case_id"]
+    decisions = [dedupe.propose_duplicate_decision(p) for p in dedupe.list_pending_duplicate_pairs(case_id)]
+    plan_id = dedupe.save_duplicate_plan(case_id, decisions)["plan_id"]
+    assert plans.refresh_status(plan_id)["status"] == "planned"
+    email_repo.update_email(sorted(plans.get_plan(plan_id)["touched"]["emails"])[0], {"subject": "Edited during review"})
+    assert plans.refresh_status(plan_id)["status"] == "stale"
+    assert plans.get_plan(plan_id)["status"] == "stale"
+    assert plans.refresh_status("rp_missing") is None
+
+
+def test_runner_stops_waiting_when_the_case_changes_under_the_plan(planted_case, tmp_path):
+    """Seen in the live rehearsal: a person edits a card the plan touches. The web
+    app then disables Approve, so waiting for an approval is pointless. The runner
+    must notice at once and tell the model to build a new plan."""
+    from app.repos import emails as email_repo
+
+    llm = FakeLlm(_script(planted_case["case_id"]))
+
+    def edit_a_touched_card(plan):
+        email_repo.update_email(sorted(plan["touched"]["emails"])[0], {"subject": "Edited during review"})
+
+    thread = _approve_in_background(edit_a_touched_card, tmp_path / "log.jsonl")
+    started = time.monotonic()
+    _run(llm, tmp_path, timeout=20)
+    thread.join(timeout=5)
+    assert time.monotonic() - started < 10  # did not sit out the 20 s timeout
+    last_tool = _last_tool_body(llm.seen[-1])
+    assert last_tool["status"] == "stale" and last_tool["changed"] is False
+    assert "build a new plan" in last_tool["message"].lower()
+
+
 def test_runner_gives_up_after_timeout(planted_case, tmp_path):
     llm = FakeLlm(_script(planted_case["case_id"]))
     _run(llm, tmp_path, timeout=0.5)
