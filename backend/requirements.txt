@@ -1,0 +1,13 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+pydantic>=2.0
+bleach[css]>=6.1
+charset-normalizer>=3.3
+extract-msg>=0.41
+tzdata>=2024.1
+openpyxl>=3.1
+pdfplumber>=0.11
+python-docx>=1.1
+mcp>=1.2,<2  # Synapse 0.1.9 generates mcp 1.x code (FastMCP)
+openai>=1.60

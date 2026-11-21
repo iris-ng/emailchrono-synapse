@@ -1,0 +1,38 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Secrets (never commit)
+secrets.local
+.env
+.env.*
+
+# Local data and runtime state
+data/
+demo_data/out/
+demo_data/sample_seed/
+bench/runs/
+agent/logs/
+.synapse/
+backend/.synapse/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS
+.DS_Store
+
+# Local tool installs
+tools/synapse/node_modules/
+
+# Local session log (kept on disk, not in the repo)
+PROGRESS.md
+
+# Design notes and build logs (local only, not published)
+docs/

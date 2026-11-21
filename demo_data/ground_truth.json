@@ -1,0 +1,513 @@
+{
+  "case": "Harbour View fit-out (planted)",
+  "timezone": "Asia/Singapore",
+  "rules": {
+    "duplicate": "Two cards are true duplicates if and only if they hold the same message key.",
+    "split": "A card whose cards_at_ingest entry lists more than one key needs a split, one part per key, in that order.",
+    "date": "date_utc is the true time. tz_basis 'sender_history' means the visible text has no zone and the zone comes from the same sender's dated emails."
+  },
+  "messages": {
+    "M1": {
+      "from": "John Tan <john.tan@harbourview.example>",
+      "to": [
+        "Mary Lim <mary.lim@limarchitects.example>"
+      ],
+      "subject": "Revised drawings",
+      "date_utc": "2024-03-12T01:14:00+00:00",
+      "date_local": "2024-03-12T09:14:00+08:00",
+      "tz_basis": "sender_history",
+      "first_line": "Hi Mary,",
+      "note": "Only seen as a Gmail quote. Parser keeps 'AM,' in the sender and cannot read the date."
+    },
+    "M2": {
+      "from": "Mary Lim <mary.lim@limarchitects.example>",
+      "to": [
+        "John Tan <john.tan@harbourview.example>"
+      ],
+      "subject": "Re: Revised drawings",
+      "date_utc": "2024-03-12T02:02:00+00:00",
+      "date_local": "2024-03-12T10:02:00+08:00",
+      "tz_basis": "header",
+      "first_line": "Hi John,",
+      "note": ""
+    },
+    "M3": {
+      "from": "Claire Martin <claire.martin@atelier-lumiere.example>",
+      "to": [
+        "Mary Lim <mary.lim@limarchitects.example>"
+      ],
+      "subject": "Luminaires - hall d'entrée",
+      "date_utc": "2024-03-12T17:45:00+00:00",
+      "date_local": "2024-03-12T18:45:00+01:00",
+      "tz_basis": "sender_history",
+      "first_line": "Bonjour Mary,",
+      "note": "Hidden behind a French Gmail reply marker the parser does not know."
+    },
+    "M4": {
+      "from": "Mary Lim <mary.lim@limarchitects.example>",
+      "to": [
+        "Claire Martin <claire.martin@atelier-lumiere.example>"
+      ],
+      "subject": "Re: Luminaires - hall d'entrée",
+      "date_utc": "2024-03-13T01:30:00+00:00",
+      "date_local": "2024-03-13T09:30:00+08:00",
+      "tz_basis": "header",
+      "first_line": "Dear Claire,",
+      "note": ""
+    },
+    "M5": {
+      "from": "Claire Martin <claire.martin@atelier-lumiere.example>",
+      "to": [
+        "Mary Lim <mary.lim@limarchitects.example>"
+      ],
+      "subject": "Fiche technique option B",
+      "date_utc": "2024-03-14T10:20:00+00:00",
+      "date_local": "2024-03-14T11:20:00+01:00",
+      "tz_basis": "header",
+      "first_line": "Bonjour Mary,",
+      "note": ""
+    },
+    "M6": {
+      "from": "Hans Weber <hans.weber@weber-statik.example>",
+      "to": [
+        "John Tan <john.tan@harbourview.example>"
+      ],
+      "subject": "Deckenlast / ceiling load",
+      "date_utc": "2024-03-13T09:30:00+00:00",
+      "date_local": "2024-03-13T10:30:00+01:00",
+      "tz_basis": "sender_history",
+      "first_line": "Hallo John,",
+      "note": "Hidden behind a German Gmail reply marker the parser does not know."
+    },
+    "M7": {
+      "from": "John Tan <john.tan@harbourview.example>",
+      "to": [
+        "Hans Weber <hans.weber@weber-statik.example>"
+      ],
+      "subject": "Re: Deckenlast / ceiling load",
+      "date_utc": "2024-03-14T08:05:00+00:00",
+      "date_local": "2024-03-14T16:05:00+08:00",
+      "tz_basis": "header",
+      "first_line": "Hans,",
+      "note": ""
+    },
+    "M8": {
+      "from": "Hans Weber <hans.weber@weber-statik.example>",
+      "to": [
+        "John Tan <john.tan@harbourview.example>"
+      ],
+      "subject": "Statische Berechnung / calculation",
+      "date_utc": "2024-03-15T07:15:00+00:00",
+      "date_local": "2024-03-15T08:15:00+01:00",
+      "tz_basis": "header",
+      "first_line": "Hallo John,",
+      "note": ""
+    },
+    "M9": {
+      "from": "Priya Nair <priya.nair@qsconsult.example>",
+      "to": [
+        "Wei Ling Koh <weiling.koh@harbourview.example>"
+      ],
+      "subject": "Cost plan v2",
+      "date_utc": "2024-03-14T08:20:00+00:00",
+      "date_local": "2024-03-14T16:20:00+08:00",
+      "tz_basis": "sender_history",
+      "first_line": "Hi Wei Ling,",
+      "note": "Gmail quote with no email address and a 24-hour time the date parser cannot read."
+    },
+    "M10": {
+      "from": "Wei Ling Koh <weiling.koh@harbourview.example>",
+      "to": [
+        "Priya Nair <priya.nair@qsconsult.example>"
+      ],
+      "subject": "Re: Cost plan v2",
+      "date_utc": "2024-03-15T06:00:00+00:00",
+      "date_local": "2024-03-15T14:00:00+08:00",
+      "tz_basis": "header",
+      "first_line": "Priya,",
+      "note": ""
+    },
+    "M11": {
+      "from": "Mary Lim <mary.lim@limarchitects.example>",
+      "to": [
+        "John Tan <john.tan@harbourview.example>"
+      ],
+      "subject": "Ceiling layout for landlord approval",
+      "date_utc": "2024-03-15T01:47:00+00:00",
+      "date_local": "2024-03-15T09:47:00+08:00",
+      "tz_basis": "sender_history",
+      "first_line": "John, attaching the revised ceiling layout for landlord approval.",
+      "note": "Gmail print-style block (name and date line, no From: label) pasted into another email."
+    },
+    "M12": {
+      "from": "John Tan <john.tan@harbourview.example>",
+      "to": [
+        "Mary Lim <mary.lim@limarchitects.example>"
+      ],
+      "subject": "Re: Ceiling layout for landlord approval",
+      "date_utc": "2024-03-15T03:02:00+00:00",
+      "date_local": "2024-03-15T11:02:00+08:00",
+      "tz_basis": "sender_history",
+      "first_line": "Mary, the landlord has approved the revised ceiling layout. Please proceed.",
+      "note": "Also present as two standalone files (12a, 12b), so a split creates a new duplicate."
+    },
+    "M13": {
+      "from": "Mary Lim <mary.lim@limarchitects.example>",
+      "to": [
+        "Priya Nair <priya.nair@qsconsult.example>"
+      ],
+      "subject": "Landlord approval thread",
+      "date_utc": "2024-03-18T02:00:00+00:00",
+      "date_local": "2024-03-18T10:00:00+08:00",
+      "tz_basis": "header",
+      "first_line": "Priya,",
+      "note": ""
+    },
+    "M14": {
+      "from": "David Brooks <david.brooks@brooks-acoustics.example>",
+      "to": [
+        "Wei Ling Koh <weiling.koh@harbourview.example>"
+      ],
+      "subject": "Acoustic report",
+      "date_utc": "2024-03-18T00:30:00+00:00",
+      "date_local": "2024-03-18T11:30:00+11:00",
+      "tz_basis": "sender_history",
+      "first_line": "Wei Ling,",
+      "note": "Sydney time quoted without a zone. Read as Singapore time it lands after the reply above it."
+    },
+    "M15": {
+      "from": "Wei Ling Koh <weiling.koh@harbourview.example>",
+      "to": [
+        "David Brooks <david.brooks@brooks-acoustics.example>"
+      ],
+      "subject": "Re: Acoustic report",
+      "date_utc": "2024-03-18T01:15:00+00:00",
+      "date_local": "2024-03-18T09:15:00+08:00",
+      "tz_basis": "header",
+      "first_line": "David,",
+      "note": ""
+    },
+    "M16": {
+      "from": "David Brooks <david.brooks@brooks-acoustics.example>",
+      "to": [
+        "Wei Ling Koh <weiling.koh@harbourview.example>"
+      ],
+      "subject": "Acoustic scope",
+      "date_utc": "2024-03-08T03:00:00+00:00",
+      "date_local": "2024-03-08T14:00:00+11:00",
+      "tz_basis": "header",
+      "first_line": "Wei Ling,",
+      "note": ""
+    },
+    "M17": {
+      "from": "John Tan <john.tan@harbourview.example>",
+      "to": [
+        "Mary Lim <mary.lim@limarchitects.example>"
+      ],
+      "subject": "Site access cards",
+      "date_utc": null,
+      "date_local": null,
+      "tz_basis": null,
+      "first_line": "Mary, the access cards for your team are ready for collection at the",
+      "note": "No Date header and no date in the text. Must be left for the user."
+    },
+    "M18": {
+      "from": "Wei Ling Koh <weiling.koh@harbourview.example>",
+      "to": [
+        "Ahmad Rahman <ahmad.rahman@buildco.example>"
+      ],
+      "subject": "Fwd: Acoustic report",
+      "date_utc": "2024-03-18T01:40:00+00:00",
+      "date_local": "2024-03-18T09:40:00+08:00",
+      "tz_basis": "header",
+      "first_line": "Ahmad,",
+      "note": "A forward is its own email, not a duplicate of the email it forwards."
+    },
+    "M19": {
+      "from": "Priya Nair <priya.nair@qsconsult.example>",
+      "to": [
+        "Wei Ling Koh <weiling.koh@harbourview.example>"
+      ],
+      "subject": "Cost plan v3",
+      "date_utc": "2024-03-19T02:00:00+00:00",
+      "date_local": "2024-03-19T10:00:00+08:00",
+      "tz_basis": "header",
+      "first_line": "Hi Wei Ling,",
+      "note": "Two copies: one with a different Message-ID and a mail-gateway footer (weak match only)."
+    },
+    "M20": {
+      "from": "Wei Ling Koh <weiling.koh@harbourview.example>",
+      "to": [
+        "John Tan <john.tan@harbourview.example>",
+        "Mary Lim <mary.lim@limarchitects.example>",
+        "Ahmad Rahman <ahmad.rahman@buildco.example>"
+      ],
+      "subject": "Site meeting minutes",
+      "date_utc": "2024-03-14T09:00:00+00:00",
+      "date_local": "2024-03-14T17:00:00+08:00",
+      "tz_basis": "header",
+      "first_line": "Site meeting minutes, week 11",
+      "note": "Same template as M21 a week later. Not a duplicate."
+    },
+    "M21": {
+      "from": "Wei Ling Koh <weiling.koh@harbourview.example>",
+      "to": [
+        "John Tan <john.tan@harbourview.example>",
+        "Mary Lim <mary.lim@limarchitects.example>",
+        "Ahmad Rahman <ahmad.rahman@buildco.example>"
+      ],
+      "subject": "Site meeting minutes",
+      "date_utc": "2024-03-21T09:00:00+00:00",
+      "date_local": "2024-03-21T17:00:00+08:00",
+      "tz_basis": "header",
+      "first_line": "Site meeting minutes, week 12",
+      "note": "Same template as M20 a week earlier. Not a duplicate."
+    }
+  },
+  "files": {
+    "01_drawings_reply.eml": {
+      "order": [
+        "M2",
+        "M1"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M2"
+        ],
+        "1": [
+          "M1"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "Gmail quote: parser makes the card but sender is 'AM, John Tan' and the date is missing."
+    },
+    "02_lighting_fr.eml": {
+      "order": [
+        "M4",
+        "M3"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M4",
+          "M3"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "French Gmail marker: the parser misses it, so two emails share one card."
+    },
+    "03_claire_spec.eml": {
+      "order": [
+        "M5"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M5"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "Gives Claire a dated email so her time zone can be inferred."
+    },
+    "04_structure_de.eml": {
+      "order": [
+        "M7",
+        "M6"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M7",
+          "M6"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "German Gmail marker: the parser misses it, so two emails share one card."
+    },
+    "05_hans_calc.eml": {
+      "order": [
+        "M8"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M8"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "Gives Hans a dated email so his time zone can be inferred."
+    },
+    "06_costplan_v2_reply.eml": {
+      "order": [
+        "M10",
+        "M9"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M10"
+        ],
+        "1": [
+          "M9"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "Gmail quote with no address and a 24-hour time: quoted card is undated."
+    },
+    "07_landlord_print.eml": {
+      "order": [
+        "M13",
+        "M12",
+        "M11"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M13",
+          "M12",
+          "M11"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "Gmail print-style blocks pasted in: no From: label, so three emails share one card."
+    },
+    "08_acoustic_reply.eml": {
+      "order": [
+        "M15",
+        "M14"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M15"
+        ],
+        "1": [
+          "M14"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "Sydney time read as Singapore time: chain date conflict."
+    },
+    "09_acoustic_scope.eml": {
+      "order": [
+        "M16"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M16"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "Gives David a dated email so his time zone can be inferred."
+    },
+    "10_access_cards_undated.eml": {
+      "order": [
+        "M17"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M17"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "No date anywhere: must stay 'left for you'."
+    },
+    "11_drawings_reply_copy.eml": {
+      "order": [
+        "M2",
+        "M1"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M2"
+        ],
+        "1": [
+          "M1"
+        ]
+      },
+      "copy_of": "01_drawings_reply.eml",
+      "purpose": "Byte-identical copy of file 01: exact duplicates."
+    },
+    "12a_landlord_approval.eml": {
+      "order": [
+        "M12"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M12"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "Standalone copy of M12 (also hidden inside file 07)."
+    },
+    "12b_landlord_approval_resaved.eml": {
+      "order": [
+        "M12"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M12"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "Same Message-ID and body as 12a, different bytes: strong duplicate."
+    },
+    "13_fwd_acoustic.eml": {
+      "order": [
+        "M18",
+        "M14"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M18"
+        ],
+        "1": [
+          "M14"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "Forward of M14: quoted card duplicates file 08's quoted card; the forward itself is not a duplicate."
+    },
+    "14_costplan_v3.eml": {
+      "order": [
+        "M19"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M19"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "Original of M19."
+    },
+    "15_costplan_v3_received.eml": {
+      "order": [
+        "M19"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M19"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "Received copy of M19: new Message-ID and a gateway footer, so only weak reasons match."
+    },
+    "16_minutes_wk11.eml": {
+      "order": [
+        "M20"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M20"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "Weekly minutes, same template as file 17. Not a duplicate."
+    },
+    "17_minutes_wk12.eml": {
+      "order": [
+        "M21"
+      ],
+      "cards_at_ingest": {
+        "0": [
+          "M21"
+        ]
+      },
+      "copy_of": null,
+      "purpose": "Weekly minutes, same template as file 16. Not a duplicate."
+    }
+  }
+}

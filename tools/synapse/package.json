@@ -1,0 +1,8 @@
+{
+  "name": "synapse-cli-local",
+  "private": true,
+  "description": "Pinned local install of Synapse CLI (not global)",
+  "dependencies": {
+    "@2ndbrainlabs-ai/synapse-cli": "0.1.9"
+  }
+}
