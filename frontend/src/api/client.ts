@@ -380,7 +380,7 @@ export interface ImportPreview {
   schema_version: string | null;
   current_schema_version: string | null;
   case_name: string | null;
-  counts: { emails: number; attachments: number; audit_events: number };
+  counts: { emails: number; attachments: number; audit_events: number; missing_files?: number };
   compatible: boolean;
   refuse_reason: string | null;
 }

@@ -1,4 +1,4 @@
-import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -331,7 +331,7 @@ def open_email_source(email_id: int):
         raise HTTPException(status_code=400, detail="This email source is not openable")
     if not source_store.can_open_sources():
         # Refuse before resolving or copying the source to a temp file.
-        raise HTTPException(status_code=501, detail="Opening source files is only supported on Windows")
+        raise HTTPException(status_code=501, detail="Opening source files is only supported on Windows and macOS")
 
     path = source_store.resolve_source(source)
     if path is None:
@@ -354,10 +354,10 @@ def open_email_source(email_id: int):
     open_path = source_store.openable_copy(path, origin_name)
 
     try:
-        os.startfile(str(open_path))  # type: ignore[attr-defined]
-    except AttributeError as exc:
-        raise HTTPException(status_code=501, detail="Opening source files is only supported on Windows") from exc
-    except OSError as exc:
+        source_store.open_with_default_app(open_path)
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except (OSError, subprocess.SubprocessError) as exc:
         raise HTTPException(status_code=500, detail=f"Could not open source file: {exc}") from exc
     return {"ok": True}
 

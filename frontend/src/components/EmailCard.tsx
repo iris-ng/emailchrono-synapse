@@ -89,6 +89,24 @@ export function EmailCard({
   const [expanded, setExpanded] = useState(false);
   const [tagMenuOpen, setTagMenuOpen] = useState(false);
   const [newTagName, setNewTagName] = useState("");
+  const tagAddRef = useRef<HTMLDivElement>(null);
+
+  // Close the tag popup on Escape or on a click outside it.
+  useEffect(() => {
+    if (!tagMenuOpen) return;
+    function onPointerDown(event: MouseEvent) {
+      if (tagAddRef.current && !tagAddRef.current.contains(event.target as Node)) setTagMenuOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setTagMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [tagMenuOpen]);
   const [renderMode, setRenderMode] = useState<"text" | "rendered">("text");
   const [draftNotes, setDraftNotes] = useState(email.notes || "");
   const [notesDirty, setNotesDirty] = useState(false);
@@ -399,7 +417,7 @@ export function EmailCard({
               </span>
             ))}
             {onAddTag && (
-              <div className="tag-add">
+              <div className="tag-add" ref={tagAddRef}>
                 <button
                   type="button"
                   className="tag-add-button"
@@ -433,6 +451,12 @@ export function EmailCard({
                           onChange={(event) => setNewTagName(event.target.value)}
                           onKeyDown={async (event) => {
                             event.stopPropagation();
+                            // stopPropagation keeps the key from the document
+                            // listener above, so handle Escape here too.
+                            if (event.key === "Escape") {
+                              setTagMenuOpen(false);
+                              return;
+                            }
                             if (event.key === "Enter" && newTagName.trim()) {
                               await onCreateTag(newTagName.trim());
                               setNewTagName("");

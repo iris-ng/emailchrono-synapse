@@ -1071,7 +1071,11 @@ export function CasePage() {
         setError(preview.refuse_reason || "This bundle is not compatible with the current app version.");
         return;
       }
-      const summary = `Import "${preview.case_name ?? "case"}" as a new matter — ${preview.counts.emails} emails, ${preview.counts.attachments} attachments?`;
+      const missing = preview.counts.missing_files ?? 0;
+      const missingNote = missing
+        ? `\n\n${missing} source or attachment file(s) were already missing when this archive was made. Those emails import without them.`
+        : "";
+      const summary = `Import "${preview.case_name ?? "case"}" as a new matter — ${preview.counts.emails} emails, ${preview.counts.attachments} attachments?${missingNote}`;
       if (!window.confirm(summary)) return;
       const created = await importCaseBundle(file);
       navigate(`/cases/${created.public_id}`);

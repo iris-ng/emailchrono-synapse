@@ -184,14 +184,20 @@ def _sender_parts(value: Optional[str]) -> Tuple[str, str]:
     return normalize_contact(name), addr.strip().lower()
 
 
-def senders_differ(left: Optional[str], right: Optional[str]) -> bool:
+def sender_agreement(left: Optional[str], right: Optional[str]) -> Optional[bool]:
+    """True or False when the two senders can be compared, None when they can't
+    (one side missing, or one has only an address and the other only a name)."""
     left_name, left_addr = _sender_parts(left)
     right_name, right_addr = _sender_parts(right)
     if left_addr and right_addr:
-        return left_addr != right_addr
+        return left_addr == right_addr
     if left_name and right_name:
-        return left_name != right_name
-    return False
+        return left_name == right_name
+    return None
+
+
+def senders_differ(left: Optional[str], right: Optional[str]) -> bool:
+    return sender_agreement(left, right) is False
 
 
 def dates_differ(left: Optional[str], right: Optional[str]) -> bool:

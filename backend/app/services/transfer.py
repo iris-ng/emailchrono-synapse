@@ -129,6 +129,9 @@ def export_case(case_id: int) -> bytes:
                 "attachments": len(attachments),
                 "audit_events": len(audit),
             },
+            # Files the rows refer to that were already gone from disk. Import
+            # accepts exactly these gaps and refuses any other missing file.
+            "missing_files": _missing_blob_members(emails, attachments),
         }
 
     buffer = io.BytesIO()
@@ -316,12 +319,39 @@ def _validate_email_source_refs(emails: List[Dict[str, Any]]) -> None:
             raise ImportError_("Malformed source blob in bundle")
 
 
+def _missing_blob_members(emails: List[Dict[str, Any]], attachments: List[Dict[str, Any]]) -> List[str]:
+    """Archive members the rows refer to whose files are already missing on
+    disk, so export cannot include them. Recorded in the manifest."""
+    missing = set()
+    for sha in {e.get("source_blob_sha256") for e in emails if e.get("source_blob_sha256")}:
+        if not source_store.managed_path(sha).exists():
+            missing.add(f"sources/{sha}")
+    for att in attachments:
+        disk_path = att.get("disk_path")
+        if disk_path and not _resolve_attachment_path(disk_path).is_file():
+            missing.add(f"attachments/{Path(disk_path).as_posix()}")
+    return sorted(missing)
+
+
+def _declared_missing(manifest: Dict[str, Any]) -> set:
+    """Members the exporter recorded as already missing. Anything malformed
+    declares nothing."""
+    declared = manifest.get("missing_files")
+    if not isinstance(declared, list) or not all(isinstance(name, str) for name in declared):
+        return set()
+    return set(declared)
+
+
 def _validate_blob_members(
-    zf: zipfile.ZipFile, emails: List[Dict[str, Any]], attachments: List[Dict[str, Any]]
+    zf: zipfile.ZipFile,
+    emails: List[Dict[str, Any]],
+    attachments: List[Dict[str, Any]],
+    declared_missing: set,
 ) -> None:
     """Refuse a bundle whose rows refer to source or attachment files it lacks,
-    rather than import records that point at no evidence."""
-    names = set(zf.namelist())
+    rather than import records that point at no evidence. Files the exporter
+    recorded as already missing on disk are accepted as known gaps."""
+    names = set(zf.namelist()) | declared_missing
     missing_sources = {
         sha
         for sha in (e.get("source_blob_sha256") for e in emails)
@@ -340,6 +370,29 @@ def _validate_blob_members(
             "Bundle is incomplete: "
             f"{len(missing_sources)} source file(s) and {len(missing_attachments)} attachment file(s) are missing"
         )
+
+
+def _accepted_gaps(
+    zf: zipfile.ZipFile,
+    emails: List[Dict[str, Any]],
+    attachments: List[Dict[str, Any]],
+    declared_missing: set,
+) -> set:
+    """Listed gaps that are real: files the rows refer to that the archive
+    lacks. Bounded by the rows, however long the manifest's list is."""
+    names = set(zf.namelist())
+    gaps = set()
+    for sha in {e.get("source_blob_sha256") for e in emails if e.get("source_blob_sha256")}:
+        variants = {f"sources/{sha}", f"sources/{sha.lower()}"}
+        if not variants & names and variants & declared_missing:
+            gaps.add(f"sources/{sha}")
+    email_ids = {e.get("id") for e in emails}
+    for att in attachments:
+        if att.get("email_id") in email_ids and att.get("disk_path"):
+            member = f"attachments/{Path(att['disk_path']).as_posix()}"
+            if member not in names and member in declared_missing:
+                gaps.add(member)
+    return gaps
 
 
 def _read_bundle(data: bytes) -> Dict[str, Any]:
@@ -412,6 +465,9 @@ def preview_bundle(data: bytes) -> Dict[str, Any]:
             "emails": len(bundle["emails"]),
             "attachments": len(bundle["attachments"]),
             "audit_events": len(bundle["audit"]),
+            "missing_files": len(
+                _accepted_gaps(bundle["zip"], bundle["emails"], bundle["attachments"], _declared_missing(manifest))
+            ),
         },
         "compatible": not incompatible,
         "refuse_reason": refuse_reason,
@@ -434,7 +490,9 @@ def import_bundle(data: bytes) -> Dict[str, Any]:
     zf: zipfile.ZipFile = bundle["zip"]
     _validate_source_blobs(zf)
     _validate_email_source_refs(bundle["emails"])
-    _validate_blob_members(zf, bundle["emails"], bundle["attachments"])
+    declared_missing = _declared_missing(manifest)
+    _validate_blob_members(zf, bundle["emails"], bundle["attachments"], declared_missing)
+    accepted_gaps = _accepted_gaps(zf, bundle["emails"], bundle["attachments"], declared_missing)
 
     with db.get_conn() as conn:
         current = max_schema_version(conn)
@@ -660,6 +718,7 @@ def import_bundle(data: bytes) -> Dict[str, Any]:
                 "schema_version": export_schema,
                 "source_event_count": len(imported_audit),
                 "source_final_event_hash": final_hash,
+                "missing_files": sorted(accepted_gaps),
                 "imported_audit_events": imported_audit,
             },
         )

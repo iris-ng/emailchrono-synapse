@@ -6,7 +6,7 @@ Status: work in progress.
 
 ## Source of the app
 
-`backend/` and `frontend/` start as a copy of [iris-ng/emailchrono-local](https://github.com/iris-ng/emailchrono-local) at commit `c326963` (Apache 2.0, see [LICENSE](LICENSE)), updated with the upstream bug fixes merged at `126abae` ([PR #1](https://github.com/iris-ng/emailchrono-local/pull/1)). Changes made to the copy are listed in the write-up.
+`backend/` and `frontend/` start as a copy of [iris-ng/emailchrono-local](https://github.com/iris-ng/emailchrono-local) at commit `c326963` (Apache 2.0, see [LICENSE](LICENSE)), updated with the upstream bug fixes merged up to `0a40233` ([PRs #1 to #5](https://github.com/iris-ng/emailchrono-local/pulls?q=is%3Apr+is%3Amerged)). Changes made to the copy are listed in the write-up.
 
 ## Synapse-generated code
 

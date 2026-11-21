@@ -37,7 +37,8 @@ from .ingest_map import (
     record_self_mappings,
 )
 from .nested_email import parse_nested_email
-from .quotes import bodies_similar, extract_quoted_blocks
+from .quoted_copies import is_quoted_copy
+from .quotes import extract_quoted_blocks
 from . import source_store
 from .tags import sync_undated_tag
 from .text_norm import canonical_body
@@ -700,30 +701,41 @@ def recompute_case_dates(case_id: int, default_tz: str) -> int:
 
 
 def reconcile_quoted_duplicates(conn, case_id: int) -> int:
-    """Remove quoted records that duplicate a standalone email in the same case.
+    """Move quoted cards that copy a standalone email in the same case to Email
+    trash. Returns how many were moved.
 
     Standalone wins over quoted. This runs after every ingest job so it is
     order-independent: it catches the case where the standalone original arrives
-    after a reply that already quoted it.
+    after a reply that already quoted it. A card moves only when
+    ``is_quoted_copy`` holds (body, sender, date and subject agree) and nobody
+    has worked on it (see ``email_repo.untouched_quoted_cards``). Cards are
+    never hard-deleted; a restored card is flagged and never moved again.
     """
-    bodies = email_repo.case_email_bodies(conn, case_id)
-    # Normalize each body once. This is an O(quoted x standalone) comparison, so
-    # normalizing inside the inner loop (as the old is_duplicate_of_any did)
-    # paid the NFKC+regex cost ~2*quoted*standalone times -- the dominant cost.
-    standalone_norms = [
-        norm
-        for _, body, kind in bodies
-        if kind == "standalone" and (norm := canonical_body(body))
+    # Normalize each body once: this is an O(quoted x standalone) comparison.
+    standalones = [
+        (dict(row), norm)
+        for row in conn.execute(
+            """
+            SELECT id, body_text, from_addr, date_utc, subject FROM emails
+            WHERE case_id = ? AND deleted_at IS NULL AND superseded_at IS NULL
+              AND source_kind = 'standalone'
+            """,
+            (case_id,),
+        )
+        if (norm := canonical_body(row["body_text"]))
     ]
-    removed = 0
-    for email_id, body, kind in bodies:
-        if kind != "quoted":
-            continue
-        target = canonical_body(body)
-        if target and any(bodies_similar(target, sn) for sn in standalone_norms):
-            email_repo.delete_email(conn, email_id)
-            removed += 1
-    return removed
+    if not standalones:
+        return 0
+    moved = 0
+    for quoted in email_repo.untouched_quoted_cards(conn, case_id):
+        norm = canonical_body(quoted["body_text"])
+        for standalone, standalone_norm in standalones:
+            if is_quoted_copy(quoted, standalone, norm, standalone_norm):
+                # Re-checks that the card is still untouched as it writes.
+                if email_repo.trash_quoted_copy(conn, quoted["id"], standalone["id"]):
+                    moved += 1
+                break
+    return moved
 
 
 def clean_body(result: EmailParseResult) -> None:
