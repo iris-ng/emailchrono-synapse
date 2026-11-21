@@ -34,7 +34,8 @@ def _pct(part: float, whole: float) -> Optional[float]:
 
 
 ROWS: List[Row] = [
-    ("Splits right (of 3)", lambda r: r["case"]["splits"]["correct"], CHRONO),
+    ("Merged cards that need a split", lambda r: r["case"]["splits"]["expected"], CHRONO),
+    ("Splits right", lambda r: r["case"]["splits"]["correct"], CHRONO),
     ("Wrong splits", lambda r: r["case"]["splits"]["wrong"], CHRONO),
     ("AI values written", lambda r: r["case"]["ai_changes"]["total"], CHRONO),
     ("AI values wrong", lambda r: r["case"]["ai_changes"]["wrong"], CHRONO),
@@ -89,6 +90,7 @@ def render(results: List[Dict[str, Any]], baseline: Dict[str, Any], meta: Dict[s
     lines = [
         "# Comparison: composed tools vs one tool per adapter",
         "",
+        f"Test case: {meta.get('set', 'planted')}. "
         f"Model: `{meta.get('model', '?')}`. Planned runs per mode per task: {meta.get('runs', '?')}"
         " (the \"Runs done\" row shows how many finished)."
         + (f" Started {meta['started']}." if meta.get("started") else ""),
