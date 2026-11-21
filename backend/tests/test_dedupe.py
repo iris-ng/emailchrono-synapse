@@ -187,3 +187,45 @@ def test_plan_goes_stale_if_a_pair_is_decided_in_the_ui_first(planted_case):
 def test_decisions_are_plain_json(planted_case):
     _, decisions = _pairs_and_decisions(planted_case)
     json.dumps(decisions)
+
+
+# --- review findings 2026-11-22 ------------------------------------------------------------
+
+
+def _pair(reasons, senders=("a@x.example", "a@x.example"), days=0.0):
+    labels = {"same_body_hash": "Same normalized body", "same_message_id": "Same Message-ID"}
+    return {
+        "candidate_id": 1,
+        "email_a": {"id": 1},
+        "email_b": {"id": 2},
+        "reasons": list(reasons),
+        "reason_labels": [labels.get(r, r) for r in reasons],
+        "suggested_keeper_id": 1,
+        "sender_addresses": list(senders),
+        "days_apart": days,
+        "own_text_similarity": 1.0,
+    }
+
+
+def test_same_body_from_different_senders_is_left_for_the_person():
+    """Codex F14: two reminders with one template body are not the same email."""
+    decision = dedupe.propose_duplicate_decision(_pair(["same_body_hash"], senders=("a@x.example", "b@y.example")))
+    assert decision["decision"] == "left_for_you"
+    assert any("Different senders" in e for e in decision["evidence"])
+
+
+def test_same_body_a_month_apart_is_left_for_the_person():
+    decision = dedupe.propose_duplicate_decision(_pair(["same_body_hash"], days=30.0))
+    assert decision["decision"] == "left_for_you"
+    assert any("days apart" in e for e in decision["evidence"])
+
+
+def test_same_body_same_sender_same_day_is_still_a_duplicate():
+    assert dedupe.propose_duplicate_decision(_pair(["same_body_hash"]))["decision"] == "duplicate"
+
+
+def test_same_message_id_is_a_duplicate_even_if_headers_differ():
+    decision = dedupe.propose_duplicate_decision(
+        _pair(["same_message_id", "same_body_hash"], senders=("a@x.example", "b@y.example"))
+    )
+    assert decision["decision"] == "duplicate"

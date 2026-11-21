@@ -195,6 +195,18 @@ def list_pending_duplicate_pairs(case_id: int) -> List[Dict[str, Any]]:
     return pairs
 
 
+def _header_conflicts(pair: Dict[str, Any]) -> List[str]:
+    """Header evidence that two cards are different emails: senders, then dates."""
+    found = []
+    left_addr, right_addr = pair.get("sender_addresses") or [None, None]
+    if left_addr and right_addr and left_addr != right_addr:
+        found.append(f"Different senders: {left_addr} and {right_addr}")
+    days = pair.get("days_apart")
+    if days is not None and days > DAYS_APART_ABOVE:
+        found.append(f"Dates {days:.1f} days apart")
+    return found
+
+
 def propose_duplicate_decision(pair: Dict[str, Any]) -> Dict[str, Any]:
     """Propose a decision for one pair from list_pending_duplicate_pairs: duplicate (exact reason), dissimilar (evidence they differ) or left_for_you. Pure, no writes."""
     a_id, b_id = pair["email_a"]["id"], pair["email_b"]["id"]
@@ -207,6 +219,16 @@ def propose_duplicate_decision(pair: Dict[str, Any]) -> Dict[str, Any]:
         "duplicate_id": None,
     }
     exact = [code for code in pair["reasons"] if code in EXACT_REASON_CODES]
+    conflicts = _header_conflicts(pair)
+    if exact == ["same_body_hash"] and conflicts:
+        # Same text is not the same email: template reminders share one body.
+        # Only a Message-ID or same-file match proves identity, so a person decides.
+        return {
+            **base,
+            "decision": "left_for_you",
+            "evidence": [labels["same_body_hash"], *conflicts],
+            "why": "Same body text, but the headers differ. It may be a repeated template. A person should decide.",
+        }
     if exact:
         keeper = pair["suggested_keeper_id"]
         return {
@@ -218,13 +240,7 @@ def propose_duplicate_decision(pair: Dict[str, Any]) -> Dict[str, Any]:
             "why": f"Exact match ({', '.join(exact)}). Keep #{keeper}, the better-parsed copy.",
         }
 
-    evidence = []
-    left_addr, right_addr = pair.get("sender_addresses") or [None, None]
-    if left_addr and right_addr and left_addr != right_addr:
-        evidence.append(f"Different senders: {left_addr} and {right_addr}")
-    days = pair.get("days_apart")
-    if days is not None and days > DAYS_APART_ABOVE:
-        evidence.append(f"Dates {days:.1f} days apart")
+    evidence = list(conflicts)
     similarity = pair.get("own_text_similarity")
     if similarity is not None and similarity < DIFFERENT_TEXT_BELOW:
         evidence.append(f"Different own text once quoted text is removed ({round(similarity * 100)}% similar)")

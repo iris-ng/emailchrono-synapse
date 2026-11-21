@@ -42,7 +42,11 @@ CANDIDATE_FINGERPRINT_COLUMNS = (
     "id", "case_id", "email_a_id", "email_b_id", "status",
     "canonical_email_id", "duplicate_email_id", "reason_json",
 )
+# The case row: plan values for undated cards are worked out in the case time zone,
+# and a plan must not change a case moved to the trash.
+CASE_FINGERPRINT_COLUMNS = ("id", "default_tz", "deleted_at")
 _FINGERPRINT_TABLES = {
+    "cases": ("cases", CASE_FINGERPRINT_COLUMNS),
     "emails": ("emails", EMAIL_FINGERPRINT_COLUMNS),
     "duplicate_candidates": ("email_duplicate_candidates", CANDIDATE_FINGERPRINT_COLUMNS),
 }
@@ -72,9 +76,14 @@ def _canonical_json(value: Any) -> str:
 
 
 def compute_fingerprint(conn: sqlite3.Connection, touched: Dict[str, Iterable[int]]) -> str:
-    """Hash the current state of every row a plan touches (missing rows count too)."""
+    """Hash the current state of every row a plan touches (missing rows count too).
+
+    Only the kinds of row listed in ``touched`` count, so plans stored before a kind
+    was added keep their fingerprint."""
     state: Dict[str, List[Any]] = {}
     for key, (table, columns) in _FINGERPRINT_TABLES.items():
+        if key not in touched:
+            continue
         ids = sorted({int(value) for value in touched.get(key, [])})
         rows: Dict[int, List[Any]] = {}
         if ids:
@@ -136,6 +145,7 @@ def create_plan(
     if kind not in KINDS:
         raise PlanError(f"Unknown plan kind {kind!r}")
     touched_clean = {key: sorted({int(v) for v in touched.get(key, [])}) for key in _FINGERPRINT_TABLES}
+    touched_clean["cases"] = [int(case_id)]
     items_json = _canonical_json(items)
     now = _now()
     plan_id = "rp_" + secrets.token_hex(6)

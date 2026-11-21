@@ -344,3 +344,47 @@ def test_excel_export_has_an_inferred_fields_column(applied_case):
     values = {row[subjects]: row[column] for row in sheet.iter_rows(min_row=2, values_only=True)}
     assert "to" in values["Revised drawings"] and "time zone" in values["Revised drawings"]
     assert not values["Cost plan v3"]
+
+
+# --- review findings 2026-11-22 ------------------------------------------------------------
+
+
+def test_split_keeps_the_source_cards_notes_and_star_on_part_one(planted_case, model):
+    """Codex F03: a split used to blank notes and importance on every part. Manual Snip
+    keeps them on part 1, and so must an AI split, including a note added after planning."""
+    case_id = planted_case["case_id"]
+    french = planted_case["card"]("02_lighting_fr.eml")
+    result = _build(case_id)
+    email_repo.update_email(french, {"notes": "Check the lux figures", "important": True})
+    _approve(result["plan_id"])
+    applied = chronology.apply_chronology_plan(case_id, result["plan_id"])
+    assert applied["status"] == "applied", applied
+    top, hidden = _parts_of(french)
+    assert top["notes"] == "Check the lux figures" and top["important"] == 1
+    assert hidden["notes"] == "" and hidden["important"] == 0
+
+
+def test_changing_the_case_time_zone_makes_the_plan_stale(planted_case, model):
+    """Codex F07: undated cards get dates worked out in the case time zone."""
+    from app.repos import cases as case_repo
+
+    case_id = planted_case["case_id"]
+    result = _build(case_id)
+    _approve(result["plan_id"])
+    case_repo.update_case(case_id, default_tz="America/New_York")
+    stale = chronology.apply_chronology_plan(case_id, result["plan_id"])
+    assert stale["code"] == "stale", stale
+    assert _parts_of(planted_case["card"]("02_lighting_fr.eml")) == []
+
+
+def test_trashing_the_case_stops_an_approved_plan(planted_case, model):
+    """Codex F07: an approved plan must not change a case that was moved to the trash."""
+    from app.repos import cases as case_repo
+
+    case_id = planted_case["case_id"]
+    result = _build(case_id)
+    _approve(result["plan_id"])
+    assert case_repo.soft_delete_case(case_id)
+    refused = chronology.apply_chronology_plan(case_id, result["plan_id"])
+    assert refused.get("status") != "applied", refused
+    assert _parts_of(planted_case["card"]("02_lighting_fr.eml")) == []

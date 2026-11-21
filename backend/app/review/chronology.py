@@ -33,7 +33,7 @@ from ..repos.duplicates import recompute_duplicate_candidates
 from ..repos.emails import update_email_fields
 from ..repos.threads import recompute_case_threads
 from ..services.dates import TZ_ABBREVIATIONS, coerce_datetime, resolve_zone
-from ..services.email_text import CJK_WROTE_RE, strip_quote_prefixes
+from ..services.email_text import CJK_HEADER_LABELS, CJK_WROTE_RE, strip_quote_prefixes
 from ..services.snip import (
     SnipError,
     build_part,
@@ -80,6 +80,66 @@ def _display_name(value: Optional[str]) -> str:
     return _squash(text.replace('"', "")).strip(", ")
 
 
+def _name_words(value: Optional[str]) -> str:
+    """The name part of 'Name <address>', with any address removed."""
+    text = ADDRESS_RE.sub(" ", TIME_TEXT_PREFIX_RE.sub("", value or ""))
+    return _squash(re.sub(r'[<>()"]', " ", text)).strip(" ,")
+
+
+def _holds(line: str, value: str) -> bool:
+    """True when the line holds the whole value: its address as a complete address,
+    and its name as whole words. "alice@x.example" is not in "alice@x.example.evil",
+    and "Ann" is not in "Joanne"."""
+    text = _squash(_strip_quote_marks(line or ""))
+    address = _address(value)
+    if address and address not in {found.lower() for found in ADDRESS_RE.findall(text)}:
+        return False
+    name = _name_words(value)
+    if name and not re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text, re.I):
+        return False
+    return bool(address or name)
+
+
+_LABEL_WORDS = (
+    "from", "to", "cc", "bcc", "sent", "date", "subject", "reply-to",
+    "de", "à", "a", "para", "von", "an", "gesendet", "datum", "betreff", "objet", "envoyé", "envoye",
+    "asunto", "enviado", "fecha", "oggetto", "inviato", "data", "da", "aan", "van", "verzonden",
+    "onderwerp", "assunto",
+)
+_CJK_LABELS = sorted({label for labels in CJK_HEADER_LABELS.values() for label in labels if not label.isascii()})
+HEADER_LABEL_RE = re.compile(
+    r"^\*?\s*(?:"
+    + "|".join([re.escape(word) for word in _LABEL_WORDS] + [r"\s*".join(map(re.escape, label)) for label in _CJK_LABELS])
+    + r")\s*\*?\s*[:：]",
+    re.I,
+)
+HEADER_BLOCK_MAX_LINES = 8
+
+
+def header_region(text: str) -> List[str]:
+    """The header lines at the top of a part: a reply marker or a header line such as
+    'From: ...', and the lines after it up to the first blank line (at most 8).
+    Empty when the part starts with ordinary text: a header-like line further down
+    is body text, not this email's header."""
+    body = normalize_newlines(text or "")
+    starts = {marker["offset"] for marker in problem_finder.markers_in(body)}
+    lines: List[str] = []
+    position = 0
+    for raw in body.split("\n"):
+        clean = re.sub(r"^[ \t>]*", "", raw).strip()
+        if not lines:
+            if clean:
+                if position not in starts and not HEADER_LABEL_RE.match(clean):
+                    return []
+                lines.append(clean)
+        elif not clean or len(lines) >= HEADER_BLOCK_MAX_LINES:
+            break
+        else:
+            lines.append(clean)
+        position += len(raw) + 1
+    return lines
+
+
 # --- split lines -> offsets -----------------------------------------------------
 
 
@@ -87,7 +147,8 @@ def split_offsets_for_lines(body: str, lines: List[str]) -> Tuple[List[int], Lis
     """Turn the model's exact first lines of hidden emails into split offsets.
 
     Each line must equal a whole line of the body (quote marks and spacing aside),
-    below the card's first line and in body order. Returns (offsets, errors);
+    below the card's first line and in body order, and must be a reply marker or
+    header line (problems.markers_in). Returns (offsets, errors);
     offsets is empty when anything is wrong."""
     text = normalize_newlines(body or "")
     spans = []
@@ -96,6 +157,7 @@ def split_offsets_for_lines(body: str, lines: List[str]) -> Tuple[List[int], Lis
         spans.append((position, position + len(raw)))
         position += len(raw) + 1
     first_start = next((start for start, end in spans if text[start:end].strip()), 0)
+    marker_starts = {marker["offset"] for marker in problem_finder.markers_in(text)}
 
     offsets: List[int] = []
     errors: List[str] = []
@@ -118,6 +180,9 @@ def split_offsets_for_lines(body: str, lines: List[str]) -> Tuple[List[int], Lis
             continue
         if found <= first_start:
             errors.append(f'Split line "{target[:100]}" is the card\'s first line, not a hidden email.')
+            continue
+        if found not in marker_starts:
+            errors.append(f'Split line "{target[:100]}" is not a reply marker or header line, so it does not start a hidden email.')
             continue
         offsets.append(found)
         cursor = found + 1
@@ -200,16 +265,24 @@ def iso_matches_quote(local_iso: str, quote: str) -> Optional[str]:
     except ValueError:
         return f'The AI date "{local_iso}" is not an ISO 8601 date-time.'
     folded = _fold(quote)
-    times = _times_in(folded)
+    # A zone offset such as "GMT+08:00" is not a clock time.
+    times = [t for t in _times_in(folded) if not re.search(r"(?:[+-]|gmt|utc)\s*$", folded[: t[2]])]
+    if len(times) > 1:
+        return "The quote holds more than one time, so it is not one date. A person should check it."
     if (value.hour, value.minute) not in {(h, m) for h, m, _, _ in times}:
         return f"The time {value:%H:%M} is not written in the quote."
-    in_time = [(start, end) for _, _, start, end in times]
+    seconds = re.match(r"\s*[:.]\s*(\d{2})(?!\d)", folded[times[0][3]:])
+    if value.microsecond or value.second != (int(seconds.group(1)) if seconds else 0):
+        return f"The seconds :{value.second:02d} are not written in the quote."
+    in_time = [(start, end + (seconds.end() if seconds else 0)) for _, _, start, end in times]
     numbers = [
         match.group(0)
         for match in re.finditer(r"\d+", folded)
         if not any(start <= match.start() < end for start, end in in_time)
     ]
-    years = [int(n) for n in numbers if len(n) == 4]
+    years = [int(n) for n in numbers if len(n) == 4 and re.fullmatch(r"(?:19|20)\d{2}", n)]
+    if len(years) > 1:
+        return "The quote holds more than one year, so it is not one date. A person should check it."
     small = [int(n) for n in numbers if len(n) <= 2]
     if years:
         if value.year not in years:
@@ -218,15 +291,48 @@ def iso_matches_quote(local_iso: str, quote: str) -> Optional[str]:
         return f"The year {value.year} is not written in the quote."
     if value.day not in small:
         return f"The day {value.day} is not written in the quote."
-    named = [MONTH_NAMES[word] for word in re.findall(r"[a-z]+", folded) if word in MONTH_NAMES]
-    if len(set(named)) > 1 and "mar" in re.findall(r"[a-z]+", folded):
+    words = re.findall(r"[a-z]+", folded)
+    named = [MONTH_NAMES[word] for word in words if word in MONTH_NAMES]
+    if len(set(named)) > 1 and "mar" in words:
         # "mar." is also Tuesday in French and Spanish; trust the other month name.
-        named = [MONTH_NAMES[word] for word in re.findall(r"[a-z]+", folded) if word in MONTH_NAMES and word != "mar"]
+        named = [MONTH_NAMES[word] for word in words if word in MONTH_NAMES and word != "mar"]
+    if len(set(named)) > 1:
+        return "The quote names more than one month, so it is not one date. A person should check it."
     if named:
         if value.month not in named:
             return f"The month {value.month} does not match the month name in the quote."
-    elif value.month not in small:
-        return f"The month {value.month} is not written in the quote."
+        return None
+    return _numeric_date_problem(value, folded)
+
+
+NUMERIC_DATE_RE = re.compile(r"(?<!\d)(\d{1,4})([./-])(\d{1,2})\2(\d{1,4})(?!\d)")
+
+
+def _numeric_date_problem(value: datetime, folded: str) -> Optional[str]:
+    """A date written only in numbers must read one way. Year first (2024-03-12) and
+    dotted dates (12.03.2024) read day first after the year; a slash or dash date
+    whose first two numbers could swap (4/3/24) is ambiguous."""
+    found = NUMERIC_DATE_RE.findall(folded)
+    if len(found) > 1:
+        return "The quote holds more than one date. A person should check it."
+    if not found:
+        return None if value.month in [int(n) for n in re.findall(r"(?<!\d)\d{1,2}(?!\d)", folded)] else (
+            f"The month {value.month} is not written in the quote."
+        )
+    first, sep, second, third = found[0]
+    a, b, c = int(first), int(second), int(third)
+    if len(first) == 4:
+        day, month = c, b
+    elif sep == ".":
+        day, month = a, b
+    elif a <= 12 and b <= 12 and a != b:
+        return f'The date "{first}{sep}{second}{sep}{third}" can be read day first or month first. A person should check it.'
+    elif a > 12:
+        day, month = a, b
+    else:
+        day, month = b, a
+    if (value.day, value.month) != (day, month):
+        return f"The day and month do not match the date written in the quote ({first}{sep}{second}{sep}{third})."
     return None
 
 
@@ -458,11 +564,19 @@ def _position_below(text: str) -> str:
     return "middle" if relation_of(text, below[0]["offset"])["relation"] == "reply" else "unknown"
 
 
-def _own_header_line(value: str, own: str, labels: Tuple[str, ...]) -> Optional[str]:
-    """The 'To:'/'Subject:'-style line of this email's own text that holds the value, if any."""
-    wanted = _squash(value).lower()
-    for line in _strip_quote_marks(own).split("\n"):
-        if re.match(rf"^\s*\*?(?:{'|'.join(labels)})\s*\*?\s*:", line, re.I) and wanted in _squash(line).lower():
+def _own_header_line(value: str, header_lines: List[str], labels: Tuple[str, ...]) -> Optional[str]:
+    """The 'To:'/'Subject:'-style line in this email's header lines that holds the whole
+    value, if any. A subject must equal the line's whole subject; an address must be
+    one of the line's complete addresses."""
+    for line in header_lines:
+        match = re.match(rf"^\s*\*?(?:{'|'.join(labels)})\s*\*?\s*:\s*\*?\s*(?P<rest>.*)$", line, re.I)
+        if not match:
+            continue
+        rest = match.group("rest")
+        if labels == ("subject",):
+            if _squash(rest).lower() == _squash(value).lower():
+                return line.strip()
+        elif _holds(rest, value):
             return line.strip()
     return None
 
@@ -705,8 +819,14 @@ def _cut_marker(segment: str) -> str:
             end = match.end()
             break
     if end is None:
-        newline = segment.find("\n")
-        end = len(segment) if newline == -1 else newline
+        # Drop the first line only when it is a marker line; otherwise keep all text.
+        first = re.search(r"\S", segment)
+        line_start = segment.rfind("\n", 0, first.start()) + 1 if first else 0
+        if line_start in {marker["offset"] for marker in problem_finder.markers_in(segment)}:
+            newline = segment.find("\n", line_start)
+            end = len(segment) if newline == -1 else newline
+        else:
+            end = 0
     return strip_quote_prefixes(segment[end:]).strip()
 
 
@@ -850,8 +970,13 @@ def _prepare(conn: sqlite3.Connection, row: sqlite3.Row, split_lines: List[str])
         parent = normalize_newlines(above["body_text"] or "")
         at = parent.find(header) if header else -1
         top_relation = relation_of(parent, at) if at >= 0 else {"relation": "unknown", "marker": ""}
+    header_lines = [re.sub(r"^[ \t>]*", "", line).strip() for line in header.split("\n") if line.strip()] if header else []
     for part in parts:
         part["own_text"] = part["text"] + ("\n" + header if header and part["part_index"] == 1 else "")
+        # This email's header lines: the block at the top of its text, plus (part 1 of a
+        # quoted card) the header text above it in its parent. Values read as header
+        # values must come from here.
+        part["header_lines"] = header_region(part["text"]) + (header_lines if part["part_index"] == 1 else [])
         if part["part_index"] == 1:
             part["above_subject"] = above["subject"] if above is not None else None
             part.update(top_relation)
@@ -892,9 +1017,15 @@ def _needs_model(prepared: Dict[str, Any]) -> bool:
 def _line_holding(value: str, *texts: str) -> Optional[str]:
     for text in texts:
         for line in _strip_quote_marks(text).split("\n"):
-            if value in _squash(line):
+            if _holds(line, value):
                 return line.strip()
     return None
+
+
+def _in_lines(evidence: str, lines: List[str]) -> bool:
+    """True when the evidence text sits inside these lines."""
+    wanted = _squash(_strip_quote_marks(evidence))
+    return bool(lines) and bool(wanted) and wanted in _squash(" ".join(lines))
 
 
 def _is_header(evidence: str, label: str) -> bool:
@@ -903,20 +1034,42 @@ def _is_header(evidence: str, label: str) -> bool:
     return bool(lines) and all(re.match(rf"^\s*\*?{label}\s*\*?\s*:", line, re.I) for line in lines)
 
 
-def _check_text(value: str, evidence: str, corpus: str, own: str) -> Tuple[bool, str, bool, str]:
-    """(ok, why, inferred, evidence). The value must be written in the card material.
-    If the model's evidence does not hold it, code finds the line that does (own
-    text first). The value is inferred unless that evidence is in the part's own text."""
+def _check_text(value: str, evidence: str, corpus: str, header_lines: List[str], own: str = "") -> Tuple[bool, str, bool, str]:
+    """(ok, why, in_header, evidence). The whole value must be written in the card
+    material (see _holds). If the model's evidence does not hold it, code finds the
+    line that does, this email's header lines first. in_header is True when that
+    evidence is in this email's header lines."""
     wanted = _squash(value)
     seen = _squash(_strip_quote_marks(evidence))
     if not wanted:
         return False, "The AI returned an empty value.", False, ""
-    if not (seen and wanted in seen and seen in _squash(_strip_quote_marks(corpus))):
-        found = _line_holding(wanted, own, corpus)
+    if not (seen and _holds(seen, value) and seen in _squash(_strip_quote_marks(corpus))):
+        found = _line_holding(value, "\n".join(header_lines), own, corpus)
         if found is None:
-            return False, f'The value "{value[:100]}" is not in the card material.', False, ""
-        seen, evidence = _squash(found), found
-    return True, "", seen not in _squash(_strip_quote_marks(own)), evidence.strip()
+            return False, f'The value "{value[:100]}" is not in the card material as a whole value.', False, ""
+        evidence = found
+    if not _in_lines(evidence, header_lines):
+        # The model cited a body line; prefer the same value in the header lines if it is there.
+        found = _line_holding(value, "\n".join(header_lines))
+        if found is not None:
+            evidence = found
+    return True, "", _in_lines(evidence, header_lines), evidence.strip()
+
+
+def _borrowed_sender(value: str, part: Dict[str, Any], above_recipients: List[str]) -> Optional[str]:
+    """Evidence for a sender whose name is in this email's header lines but whose
+    address is not: the email above is a reply to it and was sent to that exact name
+    and address. None when the rule does not apply."""
+    name, address = _name_words(value), _address(value)
+    if part.get("relation") != "reply" or not name or not address:
+        return None
+    header_line = _line_holding(name, "\n".join(part["header_lines"]))
+    if header_line is None:
+        return None
+    for recipient in above_recipients:
+        if _address(recipient) == address and _name_words(recipient).lower() == name.lower():
+            return f'"{header_line}" names {name}; the reply above was sent to {recipient}, so this is that address.'
+    return None
 
 
 def _sender_check(current: str, value: str) -> Tuple[bool, str]:
@@ -932,7 +1085,7 @@ def _sender_check(current: str, value: str) -> Tuple[bool, str]:
         if TIME_TEXT_PREFIX_RE.match(current):
             return True, ""
         return True, "same sender"
-    if _display_name(current).lower() not in _display_name(value).lower():
+    if not re.search(rf"(?<!\w){re.escape(_display_name(current))}(?!\w)", _display_name(value), re.I):
         return False, f'The AI sender "{value}" does not match the parsed sender name "{current}".'
     return (True, "") if new_address or TIME_TEXT_PREFIX_RE.match(current) else (True, "same sender")
 
@@ -947,8 +1100,13 @@ def _resolve_date(conn: sqlite3.Connection, prepared: Dict[str, Any], part: Dict
     case_tz = row["default_tz"] or "UTC"
     case_zone = resolve_zone(case_tz)
     quote, iso = str(answer.get("quote") or ""), str(answer.get("local_iso") or "")
-    first = read_date(quote, iso, part["own_text"], case_zone)
+    # The date must be quoted from this email's header lines, not from body prose
+    # (a deadline or a meeting time in the text is not when the email was sent).
+    header_text = "\n".join(part["header_lines"])
+    first = read_date(quote, iso, header_text, case_zone)
     if not first["ok"]:
+        if quote.strip() and _in_lines(quote, [part["own_text"]]) and not _in_lines(quote, part["header_lines"]):
+            return {"ok": False, "why": f'The date "{quote}" is written in the body text, not in this email\'s header lines.'}
         return {"ok": False, "why": first["reason"]}
     zone_email_id = None
     if first["zone_in_quote"]:
@@ -963,7 +1121,7 @@ def _resolve_date(conn: sqlite3.Connection, prepared: Dict[str, Any], part: Dict
         else:
             zone, zone_source = case_zone, "case"
             zone_evidence = f"No dated email from this sender in the case, so the case time zone ({case_tz}) was used"
-        final = read_date(quote, iso, part["own_text"], zone)
+        final = read_date(quote, iso, header_text, zone)
     if conflict:
         local = datetime.fromisoformat(final["date_utc"]).astimezone(case_zone)
         if zone_source == "case" or (
@@ -1018,18 +1176,29 @@ def _review_part(
         above_row = prepared["above"]
         above_sender = above_row["from_addr"] if above_row is not None else None
         above_subject = above_row["subject"] if above_row is not None else None
+        above_recipients = (
+            _json_list(above_row["to_json"]) + _json_list(above_row["cc_json"]) if above_row is not None else []
+        )
     else:
         above_sender = (previous or {}).get("from_addr")
         above_subject = (previous or {}).get("subject")
+        above_recipients = list((previous or {}).get("to") or []) + list((previous or {}).get("cc") or [])
 
     sender = answer.get("sender") if isinstance(answer.get("sender"), dict) else None
     if sender:
         value = str(sender.get("value") or "").strip()
-        ok, why, inferred, evidence = _check_text(value, str(sender.get("evidence") or ""), corpus, part["own_text"])
+        ok, why, in_header, evidence = _check_text(value, str(sender.get("evidence") or ""), corpus, part["header_lines"], part["own_text"])
+        inferred_from: List[str] = []
+        if ok and not in_header:
+            borrowed = _borrowed_sender(value, part, above_recipients)
+            if borrowed:
+                evidence, inferred_from = borrowed, ["inferred_from"]
+            else:
+                ok, why = False, "The sender is written only in body text, not in this email's header lines. A person should check it."
         if ok:
             ok, why = _sender_check(part["from_addr"], value)
         if ok and not why and value != part["from_addr"]:
-            changes.append(_change("from_addr", part["from_addr"], value, evidence, ["inferred_from"] if inferred else []))
+            changes.append(_change("from_addr", part["from_addr"], value, evidence, inferred_from))
             after["from_addr"] = value
         elif not ok:
             rejected.append({"field": "from_addr", "value": value, "why": why})
@@ -1045,9 +1214,9 @@ def _review_part(
         elif not all(_address(value) for value in values):
             rejected.append({"field": "to", "value": values, "why": "Each recipient needs an email address; a name alone (for example from a greeting) is not enough."})
         else:
-            checks = [_check_text(value, evidence, corpus, part["own_text"]) for value in values]
+            checks = [_check_text(value, evidence, corpus, part["header_lines"], part["own_text"]) for value in values]
             failed = next((why for ok, why, _, _ in checks if not ok), None)
-            own_lines = [_own_header_line(value, part["own_text"], ("to", "cc")) for value in values]
+            own_lines = [_own_header_line(value, part["header_lines"], ("to", "cc")) for value in values]
             if failed:
                 rejected.append({"field": "to", "value": values, "why": failed})
             elif all(own_lines):
@@ -1072,7 +1241,7 @@ def _review_part(
         value = str(subject.get("value") or "").strip()
         current = part["subject"] or ""
         carried = current in ("", "(no subject)") or (part["above_subject"] is not None and current == part["above_subject"])
-        own_line = _own_header_line(value, part["own_text"], ("subject",)) if value else None
+        own_line = _own_header_line(value, part["header_lines"], ("subject",)) if value else None
         if not carried:
             rejected.append({"field": "subject", "value": value, "why": "The card already has its own subject."})
         elif not value:
@@ -1461,6 +1630,11 @@ def _apply_item(plan_id: str):
                 raise RuntimeError(f"card {item['email_id']} is missing")
             _write_flags(conn, item["email_id"], item["changes"], plan_id)
         else:
+            # Like manual Snip: part 1 keeps the source card's notes and star, read
+            # now so a note added after planning is kept too. Other parts start blank.
+            source = conn.execute(
+                "SELECT notes, important FROM emails WHERE id = ?", (item["email_id"],)
+            ).fetchone()
             drafts = [
                 {
                     "part_index": part["part_index"],
@@ -1470,8 +1644,8 @@ def _apply_item(plan_id: str):
                     "subject": part["after"]["subject"],
                     "date_raw": part["after"]["date_raw"],
                     "body_text": part["after"]["body_text"],
-                    "notes": "",
-                    "important": False,
+                    "notes": (source["notes"] or "") if source and part["part_index"] == 1 else "",
+                    "important": bool(source["important"]) if source and part["part_index"] == 1 else False,
                     "approved": True,
                 }
                 for part in item["parts"]

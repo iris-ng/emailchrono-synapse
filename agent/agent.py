@@ -354,12 +354,17 @@ async def run_task(
                     if decision == "approved":
                         say(f"[approved] Plan {body['plan_id']} approved. Applying.")
                         text = await _call_tool(hub, call, log, totals, retry=True)
+                    elif decision == "applied":
+                        # Applied by another process while we waited. Ask the tool, so the
+                        # model gets the stored receipt instead of "nothing was changed".
+                        say(f"[applied] Plan {body['plan_id']} was already applied. Fetching its receipt.")
+                        text = await _call_tool(hub, call, log, totals, retry=True)
                     elif decision == "declined":
                         text = json.dumps({**body, "status": "declined", "changed": False,
                                            "message": f"The user declined plan {body['plan_id']} in emailchrono. Nothing was changed. Do not apply it."})
                     elif decision == "stale":
                         text = json.dumps({**body, "status": "stale", "changed": False,
-                                           "message": f"The case changed in emailchrono after plan {body['plan_id']} was built (a card it touches was edited), so it can no longer be approved. Nothing was changed. Build a new plan."})
+                                           "message": f"The case changed in emailchrono after plan {body['plan_id']} was built (a card it touches or a case setting was edited), so it can no longer be approved. Nothing was changed. Build a new plan."})
                     elif decision == "timeout":
                         text = json.dumps({**body, "changed": False,
                                            "message": f"The user did not approve plan {body['plan_id']} within {int(approval_timeout)} seconds. Nothing was changed. Ask them to approve it, then try again."})

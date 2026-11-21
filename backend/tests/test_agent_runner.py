@@ -232,3 +232,22 @@ def test_runner_gives_up_after_timeout(planted_case, tmp_path):
     _run(llm, tmp_path, timeout=0.5)
     last_tool = [m for m in llm.seen[-1] if m.get("role") == "tool"][-1]
     assert "did not approve" in last_tool["content"].lower()
+
+
+def test_runner_does_not_say_nothing_changed_when_the_plan_was_applied_elsewhere(planted_case, tmp_path):
+    """Codex runner note: if the plan is applied by another process while the runner
+    waits, the model must not be told that nothing changed."""
+    from app.review import dedupe
+
+    llm = FakeLlm(_script(planted_case["case_id"]))
+
+    def approve_and_apply(plan):
+        approval.approve_plan(plan["id"], via="web", items_hash=plan["items_hash"])
+        dedupe.apply_duplicate_plan(plan["case_id"], plan["id"])
+
+    thread = _approve_in_background(approve_and_apply, tmp_path / "log.jsonl")
+    _run(llm, tmp_path)
+    thread.join(timeout=5)
+    last_tool = _last_tool_body(llm.seen[-1])
+    assert "nothing was changed" not in last_tool.get("message", "").lower(), last_tool
+    assert plans.get_plan(last_tool["plan_id"])["status"] == "applied"
