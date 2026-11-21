@@ -2215,6 +2215,8 @@ a.sidebar-title:hover {
 .inferred-tip {
   position: fixed;
   z-index: 60;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   width: max-content;
   max-width: min(360px, calc(100vw - 16px));
   padding: 10px 12px;

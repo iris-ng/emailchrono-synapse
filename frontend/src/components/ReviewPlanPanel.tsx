@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Check, X } from "lucide-react";
 import { approveReviewPlan, declineReviewPlan, getReviewPlan } from "../api/client";
 import type {
@@ -18,6 +18,7 @@ import { flagLabels } from "../utils/inferred";
 import { InferredMark } from "./InferredMark";
 
 const KIND_TITLE = { duplicates: "Duplicate cleanup", chronology: "Chronology review" } as const;
+const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
 function formatWhen(iso: string | null | undefined, timeZone?: string): string {
   if (!iso) return "Undated";
@@ -63,6 +64,50 @@ export function ReviewPlanPanel({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const panelRef = useRef<HTMLElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  // Modal behaviour: focus moves into the panel, Tab stays inside, Escape closes
+  // (closing never decides the plan), and focus goes back where it came from.
+  useEffect(() => {
+    if (!planId) return;
+    const returnTo = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      const panel = panelRef.current;
+      if (!panel) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = [...panel.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+        (el) => !el.hasAttribute("disabled") && el.offsetParent !== null
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || active === panel || !panel.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || !panel.contains(active))) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      if (returnTo && document.contains(returnTo)) returnTo.focus();
+    };
+  }, [planId]);
 
   useEffect(() => {
     if (!planId) return;
@@ -117,7 +162,14 @@ export function ReviewPlanPanel({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <section className="review-panel" role="dialog" aria-modal="true" aria-label="Review AI plan">
+      <section
+        ref={panelRef}
+        className="review-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Review AI plan"
+        tabIndex={-1}
+      >
         <header>
           <div>
             <p className="eyebrow">AI review plan</p>
@@ -413,7 +465,7 @@ function SplitItem({ item, timeZone }: { item: SplitPlanItem; timeZone?: string 
         {item.parts.map((part) => (
           <div className="review-card review-part" key={part.part_index}>
             <span className="review-card-label">
-              Part {part.part_index} {part.part_index === 1 ? `(stays #${item.email_id})` : "(new card)"}
+              Part {part.part_index} {part.part_index === 1 ? `(new card, keeps #${item.email_id}'s notes)` : "(new card)"}
             </span>
             <FieldsAfter after={part.after} changes={part.changes} timeZone={timeZone} />
             <q>{part.after.first_line || "(no text)"}</q>

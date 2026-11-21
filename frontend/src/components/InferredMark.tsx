@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Sparkles } from "lucide-react";
 
-type Place = { left: number; top?: number; bottom?: number };
+type Place = { left: number; top?: number; bottom?: number; maxHeight: number };
 
 const TIP_WIDTH = 360;
 const CLOSE_DELAY_MS = 150;
@@ -46,10 +46,11 @@ export function InferredMark({
     const width = Math.min(TIP_WIDTH, window.innerWidth - 16);
     const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
     const roomBelow = window.innerHeight - rect.bottom;
+    // Bound the height to the room on the chosen side; long evidence scrolls inside.
     setPlace(
       roomBelow < 200 && rect.top > roomBelow
-        ? { left, bottom: window.innerHeight - rect.top + 6 }
-        : { left, top: rect.bottom + 6 }
+        ? { left, bottom: window.innerHeight - rect.top + 6, maxHeight: rect.top - 14 }
+        : { left, top: rect.bottom + 6, maxHeight: roomBelow - 14 }
     );
     setHover(true);
   }
@@ -69,16 +70,21 @@ export function InferredMark({
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") close();
     };
+    // Scrolling the page moves the mark away, so close; scrolling inside the tooltip does not.
+    const onScroll = (event: Event) => {
+      if (tipRef.current?.contains(event.target as Node)) return;
+      close();
+    };
     const onDown = (event: MouseEvent) => {
       const target = event.target as Node;
       if (!markRef.current?.contains(target) && !tipRef.current?.contains(target)) close();
     };
-    window.addEventListener("scroll", close, true);
+    window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", close);
     window.addEventListener("keydown", onKey);
     document.addEventListener("mousedown", onDown);
     return () => {
-      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", close);
       window.removeEventListener("keydown", onKey);
       document.removeEventListener("mousedown", onDown);
@@ -112,7 +118,17 @@ export function InferredMark({
           setPinned((value) => !value);
         }}
         onDoubleClick={stop}
-        onKeyDown={stop}
+        onKeyDown={(event) => {
+          // Escape closes an open tooltip here: the window listener never sees it,
+          // because other keys are stopped so card shortcuts don't fire.
+          if (event.key === "Escape" && !open) return;
+          event.stopPropagation();
+          if (event.key === "Escape") {
+            overTip.current = false;
+            setHover(false);
+            setPinned(false);
+          }
+        }}
       >
         <Sparkles size={11} aria-hidden="true" /> {label}
       </button>
@@ -124,7 +140,7 @@ export function InferredMark({
             ref={tipRef}
             role="tooltip"
             className="inferred-tip"
-            style={{ left: place.left, top: place.top, bottom: place.bottom }}
+            style={{ left: place.left, top: place.top, bottom: place.bottom, maxHeight: place.maxHeight }}
             onMouseEnter={() => {
               overTip.current = true;
               cancelClose();
